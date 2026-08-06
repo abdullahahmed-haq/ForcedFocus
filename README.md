@@ -6,7 +6,7 @@
 [![OS: macOS](https://img.shields.io/badge/Platform-macOS-lightgrey.svg?style=flat-square&logo=apple)](https://www.apple.com/macos)
 [![Python: 3.13](https://img.shields.io/badge/Python-3.13-blue.svg?style=flat-square&logo=python)](https://www.python.org/)
 [![Swift: Native](https://img.shields.io/badge/Swift-Native-orange.svg?style=flat-square&logo=swift)](https://developer.apple.com/swift/)
-[![Aesthetic: Tactical Dark](https://img.shields.io/badge/Aesthetic-Tactical_Dark-black.svg?style=flat-square)](https://github.com/aboda/ForcedFocu)
+[![Aesthetic: Tactical Dark](https://img.shields.io/badge/Aesthetic-Tactical_Dark-black.svg?style=flat-square)]
 
 [Overview](#project-name-and-description) • [Technology Stack](#technology-stack) • [Architecture](#project-architecture) • [Getting Started](#getting-started) • [Features](#key-features) • [Testing](#testing)
 
@@ -150,7 +150,7 @@ sudo bash uninstall.sh
 2. Run browser smoke checks to cover idle, active standard, Pomodoro focus/break, recurring schedule edit, rules edit, and settings save.
 3. Validate API interactions via the local server on port `7070`.
 4. Ensure `node --check web/app.js` and `node --check web/settings.js` pass.
-5. Run testing commands before creating pull requests.
+5. Run the testing commands before sharing changes.
 
 ## Coding Standards
 

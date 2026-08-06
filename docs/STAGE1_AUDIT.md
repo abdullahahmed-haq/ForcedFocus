@@ -11,10 +11,9 @@ Sparkle integration, or successful upgrade/rollback evidence exists.
 
 ## Verified complete
 
-- Product version `1.0.0`, dependency locks, license, and CI definitions. The
+- Product version `1.0.0`, dependency locks, and license. The
   Git repository still has no recoverable baseline commit.
 - Python and development dependency locks.
-- PR and tag-triggered CI workflow definitions.
 - Central command dispatch used by HTTP and Unix socket transports.
 - `/api/version`, `/api/health`, stable timer fields, and structured error codes.
 - Canonical `shared/` source with drift detection.

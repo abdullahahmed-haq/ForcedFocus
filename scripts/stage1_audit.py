@@ -82,11 +82,9 @@ def build_checks() -> list[Check]:
                 "pyproject.toml",
                 "requirements/runtime.lock",
                 "requirements/dev.lock",
-                ".github/workflows/check.yml",
-                ".github/workflows/release.yml",
             )
             and has_git_commit(),
-            "version, locks, license, CI, and a recoverable baseline commit",
+            "version, locks, license, and a recoverable baseline commit",
         ),
         Check(
             "B: API command boundary",

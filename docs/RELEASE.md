@@ -10,8 +10,5 @@
 6. Submit with `xcrun notarytool`, retain the JSON log, staple, and validate with
    `codesign`, `pkgutil`, `spctl`, and `stapler`.
 7. Test `1.0.0-rc.1 → 1.0.0` while a session is active on Intel and Apple Silicon.
-8. Publish the GitHub Release. Generate and sign the appcast only after every
-   previous check succeeds.
-
-The release workflow expects only secret names; credentials must never be
-written to repository files.
+8. Publish the release artifact through the chosen distribution channel.
+   Generate and sign the appcast only after every previous check succeeds.
