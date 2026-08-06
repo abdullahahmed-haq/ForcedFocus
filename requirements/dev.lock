@@ -1,0 +1,11 @@
+-r runtime.lock
+pytest==8.3.5
+pytest-cov==6.0.0
+coverage==7.6.12
+iniconfig==2.0.0
+packaging==24.2
+pluggy==1.5.0
+ruff==0.8.6
+mypy==1.14.1
+mypy_extensions==1.0.0
+typing_extensions==4.12.2

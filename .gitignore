@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.venv/
+venv/
+
+# JavaScript
+node_modules/
+npm-debug.log*
+
+# macOS and editors
+.DS_Store
+.idea/
+.vscode/
+
+# Generated application and release artifacts
+menubar/ForcedFocusBar.app/
+build/
+dist/
+artifacts/
+runtime/
+*.pkg
+*.dmg
+*.xcarchive
+
+# Local operational data
+logs/
+*.log

@@ -1,0 +1,5 @@
+# Runtime lock for the bundled CPython 3.13.14 environment.
+rich==13.9.4
+markdown-it-py==3.0.0
+mdurl==0.1.2
+Pygments==2.19.2
