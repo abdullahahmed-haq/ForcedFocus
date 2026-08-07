@@ -124,14 +124,19 @@ sudo bash uninstall.sh
 
 ## Project Structure
 
-- `cli/`: Python CLI tool (`forcefocus`).
-- `daemon/`: Python 3.13 Orchestration Daemon and API server.
-- `docs/`: Master specification and design documentation.
-- `web/`: The frontend Web Dashboard (HTML/CSS/JS).
-- `menubar/`: Swift-based macOS Menubar application.
-- `chrome-extension/`: MV3 Chrome browser extension.
-- `scripts/`: Utility and testing scripts.
-- `install.sh` / `uninstall.sh`: Core setup scripts.
+The repository is organized by product surface and responsibility. The full
+ownership map and dependency direction are maintained in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+- `daemon/`: orchestration runtime, domain modules, persistence, OS adapters, and tests.
+- `cli/`: terminal client and command presentation.
+- `web/`: dashboard pages, browser code, and styles.
+- `chrome-extension/`: Manifest V3 extension and service worker.
+- `shared/`: canonical browser-shared sources; copies are generated into client directories.
+- `menubar/`: native macOS menu-bar wrapper and build resources.
+- `docs/`: product, architecture, recovery, release, and audit documentation.
+- `scripts/`: development and audit automation; historical scripts live in `scripts/archive/`.
+- `install.sh` / `uninstall.sh`: installation lifecycle and system integration.
 
 ## Key Features
 

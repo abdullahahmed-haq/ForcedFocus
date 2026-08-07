@@ -19,6 +19,38 @@ def test_start_session_blacklist(mock_daemon):
     assert "example.com" in mock_daemon.session_base_domains
     assert "test.com" in mock_daemon.session_base_domains
 
+
+def test_start_session_with_empty_blacklist_has_no_implicit_defaults(mock_daemon):
+    mock_daemon.domains_manager.save_lists({"blacklist": [], "whitelist": []})
+
+    response = mock_daemon.session_manager._start_session({
+        "action": "start",
+        "duration_minutes": 60,
+        "mode": "blacklist",
+        "session_type": "standard",
+    })
+
+    assert response["status"] == "ok"
+    assert mock_daemon.session_base_domains == []
+    assert mock_daemon.state.active_domains == []
+
+
+def test_empty_blacklist_enforcement_preserves_only_permanent_rules(mock_daemon):
+    from unittest.mock import MagicMock
+
+    mock_daemon.state.session.active = True
+    mock_daemon.state.session.mode = "blacklist"
+    mock_daemon.state.active_domains = []
+    mock_daemon.enforcement_manager._enforce_perma_block = MagicMock()
+    mock_daemon.enforcement_manager._enforce_browser_policies = MagicMock()
+    mock_daemon.enforcement_manager._enforce_block = MagicMock()
+
+    mock_daemon.enforcement_manager._enforce_current_mode()
+
+    mock_daemon.enforcement_manager._enforce_perma_block.assert_called_once()
+    mock_daemon.enforcement_manager._enforce_browser_policies.assert_called_once_with(False)
+    mock_daemon.enforcement_manager._enforce_block.assert_not_called()
+
 def test_start_session_while_active_merges(mock_daemon):
     mock_daemon.state.session.active = True
     mock_daemon.state.session.mode = "blacklist"

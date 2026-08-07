@@ -79,6 +79,9 @@ class ForcedFocusDaemon:
         self.state_revision = 0
         self.notification_warning: dict | None = None
         self.prayer_ban_active = ""
+        # Populated while Prayer interrupts a regular session. The values are
+        # persisted so a daemon restart cannot silently consume focus time.
+        self.prayer_suspension: dict | None = None
         self._sse_listeners = set()
         self._sse_listeners_lock = threading.Lock()
         self.state.active_domains: list[str] = []
@@ -349,6 +352,21 @@ class ForcedFocusDaemon:
             else:
                 SESSION_LOCK.unlink(missing_ok=True)
             return
+        prayer_suspension = data.get("prayer_suspension")
+        suspended_remaining = None
+        if isinstance(prayer_suspension, dict):
+            try:
+                suspended_remaining = max(
+                    0.0, float(prayer_suspension["session_remaining_seconds"])
+                )
+            except (KeyError, TypeError, ValueError):
+                prayer_suspension = None
+            else:
+                # The persisted wall expiry predates the Prayer interruption.
+                # Restore from the captured remaining time instead of treating
+                # Prayer time (or daemon downtime during it) as focus time.
+                expiry = datetime.now() + timedelta(seconds=suspended_remaining)
+                data["expiry"] = expiry.isoformat()
         if datetime.now() >= expiry:
             logging.info("Persisted session expired. Cleaning up.")
             self.state.session.mode = data.get("mode", "blacklist")
@@ -368,6 +386,8 @@ class ForcedFocusDaemon:
             remaining = min(wall_remaining, mono_remaining)
         else:
             remaining = wall_remaining
+        if suspended_remaining is not None:
+            remaining = suspended_remaining
         remaining = max(0, remaining)
         self.state.session.mode = data.get("mode", "blacklist")
         self.state.session.session_expiry = expiry
@@ -399,7 +419,18 @@ class ForcedFocusDaemon:
             self.state.session.pending_unlock_at = None
             self.pending_unlock_seconds = 0
             self._mono_unlock_end = 0.0
-        if data.get("pomo_phase_expiry"):
+        if prayer_suspension and prayer_suspension.get("pomo_phase_remaining_seconds") is not None:
+            try:
+                pomo_remaining = max(
+                    0.0, float(prayer_suspension["pomo_phase_remaining_seconds"])
+                )
+            except (TypeError, ValueError):
+                pomo_remaining = 0.0
+            self.state.pomodoro.pomo_phase_expiry = datetime.now() + timedelta(
+                seconds=pomo_remaining
+            )
+            self.pomo_phase_remaining = pomo_remaining
+        elif data.get("pomo_phase_expiry"):
             self.state.pomodoro.pomo_phase_expiry = datetime.fromisoformat(data["pomo_phase_expiry"])
             self.pomo_phase_remaining = max(
                 0, (self.state.pomodoro.pomo_phase_expiry - datetime.now()).total_seconds()
@@ -413,6 +444,8 @@ class ForcedFocusDaemon:
             self._mono_pomo_phase_end = now_mono + max(
                 0, (self.state.pomodoro.pomo_phase_expiry - datetime.now()).total_seconds()
             )
+        if prayer_suspension:
+            self.prayer_suspension = prayer_suspension
         self.state.session.session_group_id = data.get("session_group_id")
         self.state.session.active = True
         if self.state.session.mode in ("whitelist", "ban"):
@@ -585,6 +618,8 @@ class ForcedFocusDaemon:
             data["intent"] = self.state.session.intent
             data["intent_tasks"] = self.state.session.intent_tasks
             data["session_groups"] = self.state.session.session_groups
+            if self.prayer_suspension:
+                data["prayer_suspension"] = self.prayer_suspension
         try:
             self.state_store.backup_session_lock(SESSION_LOCK, SESSION_LOCK_PREVIOUS)
             self._atomic_write_json(SESSION_LOCK, data)

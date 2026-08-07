@@ -39,7 +39,17 @@ class DNSMixin:
                             self.daemon.state.pomodoro.pomo_phase == "break" or 
                             (self.daemon.state.pomodoro.pomo_phase == "done" and getattr(self.daemon.state.pomodoro, "pomo_next_phase", "") == "break")
                         )
-                        if self.daemon.state.session.active and not is_break:
+                        has_session_enforcement = (
+                            self.daemon.state.session.active
+                            and not is_break
+                            and (
+                                self.daemon.state.session.mode != "blacklist"
+                                or bool(self.daemon.state.active_domains)
+                            )
+                        )
+                        if has_session_enforcement or getattr(
+                            self.daemon, "prayer_ban_active", ""
+                        ):
                             self._enforce_firewall(True, upstream_dns=self.daemon.dns_proxy.upstream_dns if self.daemon.dns_proxy else None)
                         else:
                             self._enforce_firewall(False)
@@ -478,6 +488,9 @@ class DNSMixin:
     def _sni_is_allowed(self, domain: str) -> bool:
         """Callback for SNI proxy to verify if a domain is allowed."""
         if not domain:
+            return False
+        # Prayer/Ban is higher priority than an underlying Whitelist session.
+        if getattr(self.daemon, "prayer_ban_active", ""):
             return False
         domain = domain.lower()
         if self.daemon.state.session.mode == "whitelist":

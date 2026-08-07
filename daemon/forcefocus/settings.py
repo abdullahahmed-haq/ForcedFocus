@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from forcefocus.constants import SETTINGS_FILE, DEFAULT_SETTINGS, PRAYER_CACHE_FILE, CONFIG_DIR
 
 class SettingsManager:
@@ -87,12 +87,18 @@ class SettingsManager:
                     return False, f"prayer_block_enabled must be a boolean", {}
                 validated[k] = v
             elif k in ("prayer_latitude", "prayer_longitude"):
-                if not isinstance(v, (int, float)):
+                if not isinstance(v, (int, float)) or isinstance(v, bool):
                     return False, f"{k} must be a number", {}
+                if k == "prayer_latitude" and not -90 <= v <= 90:
+                    return False, "prayer_latitude must be between -90 and 90", {}
+                if k == "prayer_longitude" and not -180 <= v <= 180:
+                    return False, "prayer_longitude must be between -180 and 180", {}
                 validated[k] = v
             elif k in ("prayer_method", "prayer_minutes_before", "prayer_minutes_after"):
                 if not isinstance(v, int) or isinstance(v, bool):
                     return False, f"{k} must be an integer", {}
+                if k in ("prayer_minutes_before", "prayer_minutes_after") and v < 0:
+                    return False, f"{k} must be zero or greater", {}
                 validated[k] = v
             elif k == "prayer_skipped":
                 if not isinstance(v, dict):
@@ -120,12 +126,19 @@ class SettingsManager:
         is_enabled = validated_settings.get("prayer_block_enabled", False)
         if was_enabled and not is_enabled:
             now = datetime.now()
-            prayers = self.daemon.prayer_manager._get_prayer_times_for_date(now)
-            next_p = next((p for p in prayers if p["time"] > now), None)
-            if next_p:
-                rem_mins = (next_p["time"] - now).total_seconds() / 60.0
-                if rem_mins <= 30:
-                    return {"status": "error", "message": "Cannot disable prayer mode within 30 minutes of a prayer."}
+            if getattr(self.daemon, "prayer_ban_active", ""):
+                return {"status": "error", "message": "Cannot disable prayer mode while Prayer Ban is active."}
+            # Use the current window definition. A disable request must not
+            # make itself permissible by changing its timing in the same call.
+            mins_before = self.daemon.settings.get("prayer_minutes_before", 10)
+            skipped = self.daemon.settings.get("prayer_skipped", {})
+            for prayer in self.daemon.prayer_manager._upcoming_prayers(now):
+                block_start = prayer["time"] - timedelta(minutes=mins_before)
+                if (
+                    self.daemon.prayer_manager._skip_key(prayer) not in skipped
+                    and 0 < (block_start - now).total_seconds() <= 30 * 60
+                ):
+                    return {"status": "error", "message": "Cannot disable prayer mode within 30 minutes of a Prayer block."}
             
         if self.save_settings(validated_settings):
             self.daemon.notifications_manager.broadcast_state_changed()

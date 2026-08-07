@@ -26,6 +26,7 @@ let lastRulesSignature = "";
 let connectionAttempts = 0;
 let isRetrying = false;
 let syncInProgress = false; // P4: Guard against cascading syncs
+let syncQueued = false; // Preserve updates received while a sync is in flight.
 let apiToken = "";
 class RuleCapacityError extends Error {
   constructor(message) {
@@ -546,6 +547,10 @@ async function clearBlockRules() {
 async function applyBlockRules(domains) {
   // Merge session domains with permanent blocklist
   const allDomains = normalizeDomains([...domains, ...permaBlockedSet]);
+  // Keep webNavigation matching in the same mode as the DNR rules, including
+  // the documented empty-blacklist case.
+  blockedDomainsSet = new Set(normalizeDomains(domains));
+  currentBlockMode = "blacklist";
   if (allDomains.length === 0) {
     await clearBlockRules();
     log("No domains to block.");
@@ -555,9 +560,6 @@ async function applyBlockRules(domains) {
   assertDynamicRuleCapacity(rules, "Blacklist session");
   await clearBlockRules();
   await updateDynamicRules(rules);
-  // R1: Update in-memory blocked domains set for webNavigation matching
-  blockedDomainsSet = new Set(normalizeDomains(domains));
-  currentBlockMode = "blacklist";
   log(`Applied ${rules.length} block rules for ${allDomains.length} domains (${permaBlockedSet.size} permanent).`);
 }
 
@@ -706,7 +708,10 @@ async function fetchSessionDomains() {
 
 async function syncBlockRules(status = null) {
   // P4: Guard against cascading syncs from overlapping alarms
-  if (syncInProgress) return;
+  if (syncInProgress) {
+    syncQueued = true;
+    return;
+  }
   syncInProgress = true;
 
   try {
@@ -870,6 +875,13 @@ async function syncBlockRules(status = null) {
     }
   } finally {
     syncInProgress = false;
+    // A context-menu mutation or SSE event may have arrived after this sync
+    // calculated its rule signature. Run one follow-up pass so a Permanent
+    // Block never waits for the next alarm cycle.
+    if (syncQueued) {
+      syncQueued = false;
+      void syncBlockRules();
+    }
   }
 }
 
@@ -1017,6 +1029,12 @@ function scheduleSSEReconnect() {
 }
 
 function connectSSE() {
+  // EventSource is not guaranteed in every MV3 service-worker runtime. Alarms
+  // remain the durable fallback, so its absence must not prevent startup.
+  if (typeof EventSource === "undefined") {
+    log("SSE unavailable in this Chrome runtime; using alarm polling.", "warn");
+    return;
+  }
   if (eventSource && (eventSource.readyState === 0 || eventSource.readyState === 1)) {
     return;
   }
@@ -1025,7 +1043,13 @@ function connectSSE() {
     sseReconnectTimer = null;
   }
   if (eventSource) eventSource.close();
-  eventSource = new EventSource(`${API}/api/stream`);
+  try {
+    eventSource = new EventSource(`${API}/api/stream`);
+  } catch (error) {
+    log(`Unable to start SSE: ${error.message}`, "warn");
+    scheduleSSEReconnect();
+    return;
+  }
   
   eventSource.onmessage = (e) => {
     try {

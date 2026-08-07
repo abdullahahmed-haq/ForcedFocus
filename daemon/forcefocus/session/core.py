@@ -101,6 +101,11 @@ class CoreMixin:
                 # Check overlap if active
                 if self.daemon.state.session.active:
                     if not is_scheduling:
+                        if cmd.get("scheduled_execution"):
+                            return {
+                                "status": "error",
+                                "message": "Scheduled session conflicts with the currently active session.",
+                            }
                         if self.daemon.state.session.session_type != cmd.get("session_type", "standard"):
                             return {"status": "error", "message": "Cannot merge different session types (e.g. standard and pomodoro)."}
                         if self.daemon.state.session.mode != mode:
@@ -156,7 +161,17 @@ class CoreMixin:
     
                 if is_scheduling:
                     end_time = start_time + timedelta(minutes=duration_minutes)
-    
+
+                    if (
+                        self.daemon.state.session.active
+                        and self.daemon.state.session.session_expiry
+                        and start_time < self.daemon.state.session.session_expiry
+                    ):
+                        return {
+                            "status": "error",
+                            "message": "Schedule overlaps with the currently active session.",
+                        }
+
                     # Check overlap with existing schedules
                     for sch in self.daemon.schedules:
                         if max(start_time, sch["start_time"]) < min(
@@ -166,7 +181,14 @@ class CoreMixin:
                                 "status": "error",
                                 "message": f"Schedule overlaps with an existing schedule (starts at {sch['start_time'].strftime('%m-%d %H:%M')}).",
                             }
-    
+                    if self.daemon.schedules_manager.oneoff_conflicts_with_recurring(
+                        start_time, end_time
+                    ):
+                        return {
+                            "status": "error",
+                            "message": "Schedule overlaps with an active recurring schedule.",
+                        }
+
                     sch_cmd = cmd.copy()
                     sch_cmd.pop("schedule_in_minutes", None)
                     sch_cmd.pop("schedule_at_time", None)
@@ -318,15 +340,14 @@ class CoreMixin:
                         msg = f"Whitelist mode: {count} domains allowed ({expanded_count} total with CDNs) for {duration_minutes} min."
                 else:
                     # Build base domain list (for Chrome extension — no subdomain expansion)
-                    base_bl = self.daemon.domains_manager.load_lists().get("blacklist", [])
+                    base_bl = list(
+                        self.daemon.domains_manager.load_lists().get("blacklist", [])
+                    )
                     if selected_groups:
                         groups = self.daemon.domains_manager.load_groups()
                         for gname in selected_groups:
                             if gname in groups:
                                 base_bl.extend(groups[gname])
-                    if not base_bl:
-                        for sites in DEFAULT_BLOCKLIST.values():
-                            base_bl.extend(sites)
                     self.daemon.session_base_domains = list(
                         set(d.strip().lower() for d in base_bl if d.strip() and "." in d)
                     )
@@ -342,6 +363,14 @@ class CoreMixin:
                         msg = f"Pomodoro (Blacklist): {count} domains blocked for {self.daemon.state.pomodoro.pomo_total_cycles} cycles."
                     else:
                         msg = f"Blacklist mode: {count} domains blocked for {duration_minutes} min."
+
+                # Prayer has higher priority than every regular session mode. A
+                # session that starts while Prayer is active is immediately
+                # suspended, so its timer begins only when Prayer ends.
+                if getattr(self.daemon, "prayer_ban_active", ""):
+                    self.daemon.watchdog_manager._suspend_session_for_prayer(
+                        now_mono, datetime.now()
+                    )
     
                 logging.info(
                     "Session started (%s) — expires %s.",
@@ -506,6 +535,7 @@ class CoreMixin:
                 self.daemon.state.session.intent = None
                 self.daemon.state.session.intent_tasks = []
                 self.daemon.state.session.session_groups = []
+                self.daemon.prayer_suspension = None
                 self.daemon.notifications_manager.broadcast_state_changed()
                 # Do NOT clear schedules on session cleanup!
                 logging.info("Session ended. Hosts restored. DNS flushed.")
@@ -542,20 +572,16 @@ class CoreMixin:
                 if getattr(self.daemon, "prayer_ban_active", ""):
                     prayer_name = self.daemon.prayer_ban_active
                     now = datetime.now()
-                    prayers = self.daemon.prayer_manager._get_prayer_times_for_date(now)
                     rem = 0
                     expires_at = ""
                     total_dur = 2400
-                    if prayers:
-                        mins_after = self.daemon.settings.get("prayer_minutes_after", 30)
-                        mins_before = self.daemon.settings.get("prayer_minutes_before", 10)
-                        for p in prayers:
-                            if p["name"] == prayer_name:
-                                end_block = p["time"] + timedelta(minutes=mins_after)
-                                rem = int(max(0, (end_block - now).total_seconds()))
-                                expires_at = end_block.strftime("%H:%M:%S")
-                                total_dur = (mins_before + mins_after) * 60
-                                break
+                    active_window = self.daemon.prayer_manager.active_prayer_window(now)
+                    if active_window and active_window["name"] == prayer_name:
+                        rem = int(max(0, (active_window["end"] - now).total_seconds()))
+                        expires_at = active_window["end"].strftime("%H:%M:%S")
+                        total_dur = int(
+                            (active_window["end"] - active_window["start"]).total_seconds()
+                        )
                     return self._normalize_status({
                         "status": "ok",
                         "active": True,

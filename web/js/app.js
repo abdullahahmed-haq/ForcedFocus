@@ -2959,7 +2959,7 @@ async function refreshTracking(range) {
   renderTrackingChart(data.summary);
   renderTrackingHeatmap(data.summary);
   renderTrackingBreakdown(data.summary);
-  renderTrackingRecent(data.entries);
+  renderTrackingRecent(data.entries, data.events || []);
 }
 
 function formatFocusTime(minutes) {
@@ -2980,7 +2980,7 @@ function renderTrackingSummary(summary) {
   const netMinutes = summary.net_focus_minutes != null ? summary.net_focus_minutes : summary.total_focus_minutes;
 
   if (netFocusEl) netFocusEl.textContent = formatFocusTime(netMinutes);
-  if (totalFocusEl) totalFocusEl.textContent = formatFocusTime(summary.total_focus_minutes);
+  if (totalFocusEl) totalFocusEl.textContent = formatFocusTime(summary.total_session_minutes || 0);
   if (sessionsEl) sessionsEl.textContent = summary.total_sessions;
 
   if (percentageEl) {
@@ -3229,8 +3229,8 @@ function renderTrackingBreakdown(summary) {
   const typeContainer = document.getElementById("typeBreakdown");
   const typeLegend = document.getElementById("typeLegend");
 
-  const modeColors = { lock: "#6366f1", break: "#10b981" };
-  const modeLabels = { lock: "Lock", break: "Break" };
+  const modeColors = { lock: "#6366f1", break: "#10b981", rescue: "#a855f7" };
+  const modeLabels = { lock: "Focus", break: "Pomodoro Break", rescue: "Rescue" };
   const typeColors = { standard: "#6366f1", pomodoro: "#f59e0b", rescue: "#a855f7" };
   const typeLabels = { standard: "Standard", pomodoro: "Pomodoro", rescue: "Rescue" };
 
@@ -3269,21 +3269,25 @@ function renderTrackingBreakdown(summary) {
   }
 
   const netMinutes = summary.net_focus_minutes != null ? summary.net_focus_minutes : summary.total_focus_minutes;
-  const breakMinutes = Math.max(0, summary.total_focus_minutes - netMinutes);
-  const modeData = { lock: netMinutes, break: breakMinutes };
+  const modeData = {
+    lock: netMinutes,
+    break: summary.break_minutes || 0,
+    rescue: summary.rescue_minutes || 0,
+  };
 
   renderBar(modeContainer, modeLegend, modeData, modeColors, modeLabels, formatFocusTime);
   renderBar(typeContainer, typeLegend, summary.by_type || {}, typeColors, typeLabels);
 }
 
-function renderTrackingRecent(entries) {
+function renderTrackingRecent(entries, events = []) {
   const list = document.getElementById("trackingRecentList");
   const countEl = document.getElementById("recentSessionsCount");
   if (!list) return;
   list.innerHTML = "";
-  if (countEl) countEl.textContent = entries.length;
+  const activity = [...entries, ...events].sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
+  if (countEl) countEl.textContent = activity.length;
 
-  if (entries.length === 0) {
+  if (activity.length === 0) {
     const empty = document.createElement("div");
     empty.className = "tracking-empty-state";
     empty.textContent = "No sessions recorded yet.";
@@ -3294,7 +3298,7 @@ function renderTrackingRecent(entries) {
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
   // Show newest first, limit to 50
-  const sorted = entries.slice().reverse().slice(0, 50);
+  const sorted = activity.reverse().slice(0, 50);
   sorted.forEach(entry => {
     const item = document.createElement("div");
     item.className = "recent-session-item";
@@ -3328,7 +3332,11 @@ function renderTrackingRecent(entries) {
       const m = String(d.getMinutes()).padStart(2, "0");
       const period = h >= 12 ? "PM" : "AM";
       const h12 = h % 12 || 12;
-      timeRow.textContent = `${h12}:${m} ${period} · ${formatFocusTime(entry.duration_minutes)}`;
+      const prayerEvent = entry.session_type === "prayer";
+      const eventLabel = prayerEvent
+        ? `${entry.prayer_name || "Prayer"} ${entry.event_type === "ended" ? "ended" : "started"}`
+        : formatFocusTime(entry.duration_minutes);
+      timeRow.textContent = `${h12}:${m} ${period} · ${eventLabel}`;
     } catch (e) {
       timeRow.textContent = `${formatFocusTime(entry.duration_minutes)}`;
     }
@@ -3339,7 +3347,9 @@ function renderTrackingRecent(entries) {
     // Mode chip
     const modeChip = document.createElement("span");
     modeChip.className = `recent-session-chip chip-mode-${entry.mode || "blacklist"}`;
-    modeChip.textContent = (entry.mode || "blacklist") === "whitelist" ? "Whitelist" : "Blacklist";
+    modeChip.textContent = entry.session_type === "prayer"
+      ? "Prayer"
+      : (entry.mode || "blacklist") === "whitelist" ? "Whitelist" : "Blacklist";
     meta.appendChild(modeChip);
 
     // Type and Phase chips
@@ -3362,13 +3372,20 @@ function renderTrackingRecent(entries) {
       typeChip.className = "recent-session-chip chip-type-rescue";
       typeChip.textContent = "Rescue";
       meta.appendChild(typeChip);
+    } else if (st === "prayer") {
+      const typeChip = document.createElement("span");
+      typeChip.className = "recent-session-chip";
+      typeChip.textContent = entry.event_type === "ended" ? "Prayer ended" : "Prayer started";
+      meta.appendChild(typeChip);
     }
 
     // Duration chip
     const durChip = document.createElement("span");
     durChip.className = "recent-session-chip";
-    durChip.textContent = formatFocusTime(entry.duration_minutes);
-    meta.appendChild(durChip);
+    if (st !== "prayer") {
+      durChip.textContent = formatFocusTime(entry.duration_minutes);
+      meta.appendChild(durChip);
+    }
 
     details.appendChild(timeRow);
     details.appendChild(meta);

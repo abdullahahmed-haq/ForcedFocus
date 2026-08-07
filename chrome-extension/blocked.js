@@ -177,6 +177,11 @@ function updateSessionDisplay(remSecs) {
   if (!badge) return;
   const timeStr = formatTime(remSecs);
 
+  if (sessionType === "prayer") {
+    badge.textContent = `🕌 PRAYER — ${timeStr} remaining`;
+    return;
+  }
+
   if (sessionType === "pomodoro" && pomoPhase) {
     const prefix = pomoPhase === "focus" ? "🍅" : "☕";
     badge.textContent = `${prefix} ${pomoPhase.toUpperCase()} — ${timeStr} remaining`;

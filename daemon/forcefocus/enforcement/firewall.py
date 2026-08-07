@@ -23,7 +23,9 @@ class FirewallMixin:
                     self.daemon.state.pomodoro.pomo_phase == "break" or 
                     (self.daemon.state.pomodoro.pomo_phase == "done" and getattr(self.daemon.state.pomodoro, "pomo_next_phase", "") == "break")
                 )
-                if self.daemon.state.session.active and not is_break:
+                if self.daemon.state.session.active and not is_break and not getattr(
+                    self.daemon, "prayer_ban_active", ""
+                ):
                     if self.daemon.state.session.mode == "blacklist":
                         domains_to_resolve_blocks.update(self.daemon.state.active_domains)
                     elif self.daemon.state.session.mode in ("whitelist", "ban"):
@@ -134,7 +136,16 @@ class FirewallMixin:
                         self.daemon.state.pomodoro.pomo_phase == "break" or 
                         (self.daemon.state.pomodoro.pomo_phase == "done" and getattr(self.daemon.state.pomodoro, "pomo_next_phase", "") == "break")
                     )
-                    if (self.daemon.state.session.active and self.daemon.state.session.mode in ("whitelist", "ban") and not is_break) or getattr(self.daemon, "prayer_ban_active", ""):
+                    if getattr(self.daemon, "prayer_ban_active", ""):
+                        # Prayer is an absolute Ban. Do not emit a whitelist
+                        # pass rule ahead of these global HTTP(S) blocks.
+                        filters.extend(
+                            [
+                                "block return out proto tcp from any to any port 443",
+                                "block return out proto tcp from any to any port 80",
+                            ]
+                        )
+                    elif (self.daemon.state.session.active and self.daemon.state.session.mode in ("whitelist", "ban") and not is_break):
                         filters.extend(
                             [
                                 "pass out quick from any to <ff_whitelisted_ips>",
@@ -184,4 +195,3 @@ class FirewallMixin:
                     logging.info("Firewall: rules cleared.")
             except Exception as exc:
                 logging.error("Firewall enforcement failed: %s", exc)
-

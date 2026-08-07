@@ -14,25 +14,51 @@ class PrayerManager:
     def __init__(self, daemon):
         self.daemon = daemon
 
+    @staticmethod
+    def _skip_key(prayer: dict) -> str:
+        return f"{prayer['time'].strftime('%Y-%m-%d')}-{prayer['name']}"
+
+    def _upcoming_prayers(self, now: datetime) -> list[dict]:
+        """Return today's and tomorrow's prayer times after ``now``."""
+        prayers = self._get_prayer_times_for_date(now)
+        tomorrow = now + timedelta(days=1)
+        prayers.extend(self._get_prayer_times_for_date(tomorrow))
+        return sorted((p for p in prayers if p["time"] > now), key=lambda p: p["time"])
+
+    def active_prayer_window(self, now: datetime) -> dict | None:
+        """Find an active, unskipped block window, including one from yesterday."""
+        if not self.daemon.settings.get("prayer_block_enabled", False):
+            return None
+        mins_before = self.daemon.settings.get("prayer_minutes_before", 10)
+        mins_after = self.daemon.settings.get("prayer_minutes_after", 30)
+        skipped = self.daemon.settings.get("prayer_skipped", {})
+
+        prayers = self._get_prayer_times_for_date(now)
+        prayers.extend(self._get_prayer_times_for_date(now - timedelta(days=1)))
+        for prayer in prayers:
+            start = prayer["time"] - timedelta(minutes=mins_before)
+            end = prayer["time"] + timedelta(minutes=mins_after)
+            if start <= now <= end and self._skip_key(prayer) not in skipped:
+                return {"name": prayer["name"], "start": start, "end": end}
+        return None
+
     def cmd_get_prayer(self) -> dict:
         now = datetime.now()
         prayers = self._get_prayer_times_for_date(now)
         skipped = self.daemon.settings.get("prayer_skipped", {})
-        # Find next prayer
         next_prayer = None
-        for p in prayers:
-            if p["time"] > now:
-                skip_key = f"{now.strftime('%Y-%m-%d')}-{p['name']}"
-                next_prayer = {
-                    "name": p["name"],
-                    "time": p["time"].isoformat(),
-                    "is_skipped": skip_key in skipped
-                }
-                break
+        upcoming = self._upcoming_prayers(now)
+        if upcoming:
+            prayer = upcoming[0]
+            next_prayer = {
+                "name": prayer["name"],
+                "time": prayer["time"].isoformat(),
+                "is_skipped": self._skip_key(prayer) in skipped,
+            }
                 
         all_prayers = []
         for p in prayers:
-            p_skip_key = f"{now.strftime('%Y-%m-%d')}-{p['name']}"
+            p_skip_key = self._skip_key(p)
             all_prayers.append({
                 "name": p["name"],
                 "time": p["time"].isoformat(),
@@ -56,24 +82,27 @@ class PrayerManager:
         if not prayer_name:
             return {"status": "error", "message": "Missing prayer_name"}
             
+        if not self.daemon.settings.get("prayer_block_enabled", False):
+            return {"status": "error", "message": "Prayer blocking is disabled."}
+
         now = datetime.now()
-        prayers = self._get_prayer_times_for_date(now)
-        target = next((p for p in prayers if p["name"] == prayer_name), None)
+        target = next(
+            (p for p in self._upcoming_prayers(now) if p["name"] == prayer_name), None
+        )
         
         if not target:
-            return {"status": "error", "message": "Prayer not found for today."}
+            return {"status": "error", "message": "Prayer is not an upcoming prayer."}
             
-        skip_key = f"{now.strftime('%Y-%m-%d')}-{prayer_name}"
+        skip_key = self._skip_key(target)
         skipped = self.daemon.settings.get("prayer_skipped", {})
         
         if cancel:
             if skip_key in skipped:
                 del skipped[skip_key]
                 self.daemon.settings["prayer_skipped"] = skipped
-                try:
-                    self.daemon.settings_manager.save_settings(self.daemon.settings)
-                except Exception:
-                    pass
+                if not self.daemon.settings_manager.save_settings(self.daemon.settings):
+                    return {"status": "error", "message": "Failed to save prayer skip."}
+                self.daemon.notifications_manager.broadcast_state_changed()
             return {"status": "ok"}
             
         # Check strict 30-minute rule
@@ -93,7 +122,9 @@ class PrayerManager:
         self.daemon.settings["prayer_skipped"] = skipped
         try:
             logging.info("Saving settings with new skipped: %s", skipped)
-            self.daemon.settings_manager.save_settings(self.daemon.settings)
+            if not self.daemon.settings_manager.save_settings(self.daemon.settings):
+                return {"status": "error", "message": "Failed to save prayer skip."}
+            self.daemon.notifications_manager.broadcast_state_changed()
             logging.info("Successfully skipped prayer.")
             return {"status": "ok"}
         except Exception as exc:
@@ -185,26 +216,5 @@ class PrayerManager:
 
     def _evaluate_prayer_block(self, now: datetime) -> tuple[bool, str]:
         """Check if we are currently in a prayer block window."""
-        if not self.daemon.settings.get("prayer_block_enabled", False):
-            return False, ""
-            
-        prayers = self._get_prayer_times_for_date(now)
-        if not prayers:
-            return False, ""
-            
-        mins_before = self.daemon.settings.get("prayer_minutes_before", 10)
-        mins_after = self.daemon.settings.get("prayer_minutes_after", 30)
-        skipped = self.daemon.settings.get("prayer_skipped", {})
-        
-        for p in prayers:
-            p_time = p["time"]
-            start_block = p_time - timedelta(minutes=mins_before)
-            end_block = p_time + timedelta(minutes=mins_after)
-            
-            if start_block <= now <= end_block:
-                skip_key = f"{now.strftime('%Y-%m-%d')}-{p['name']}"
-                if skip_key in skipped:
-                    continue  # User skipped this prayer
-                return True, p["name"]
-                
-        return False, ""
+        active = self.active_prayer_window(now)
+        return (True, active["name"]) if active else (False, "")

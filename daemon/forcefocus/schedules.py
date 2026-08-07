@@ -377,6 +377,84 @@ class SchedulesManager:
                 return start_dt
         return None
 
+    @staticmethod
+    def _intervals_overlap(first_start, first_end, second_start, second_end) -> bool:
+        return max(first_start, second_start) < min(first_end, second_end)
+
+    def _recurring_overlaps_interval(
+        self, rule: dict, start_time: datetime, end_time: datetime
+    ) -> bool:
+        """Return whether a recurring rule intersects one concrete time range."""
+        if not rule.get("enabled", True):
+            return False
+        try:
+            hour, minute = [int(part) for part in rule["start_time"].split(":", 1)]
+            duration = int(rule["duration_minutes"])
+        except (KeyError, TypeError, ValueError):
+            return False
+
+        # A schedule may run up to 24 hours, so include the previous calendar
+        # day when checking an interval that crosses midnight.
+        candidate = (start_time - timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        last_day = end_time.replace(hour=0, minute=0, second=0, microsecond=0)
+        skip_date = rule.get("skip_next_date", "")
+        while candidate <= last_day:
+            if (
+                candidate.weekday() in rule.get("days_of_week", [])
+                and candidate.strftime("%Y-%m-%d") != skip_date
+            ):
+                run_start = candidate.replace(hour=hour, minute=minute)
+                run_end = run_start + timedelta(minutes=duration)
+                if self._intervals_overlap(run_start, run_end, start_time, end_time):
+                    return True
+            candidate += timedelta(days=1)
+        return False
+
+    def _recurring_rules_overlap(self, first: dict, second: dict) -> bool:
+        # Check one complete week plus the prior day for cross-midnight rules.
+        # Recurring days/times repeat weekly, so this is sufficient for all
+        # future occurrences without storing generated sessions.
+        week_start = datetime(2024, 1, 1)  # Monday
+        for offset in range(8):
+            start = week_start + timedelta(days=offset)
+            if start.weekday() not in first.get("days_of_week", []):
+                continue
+            try:
+                hour, minute = [int(part) for part in first["start_time"].split(":", 1)]
+                duration = int(first["duration_minutes"])
+            except (KeyError, TypeError, ValueError):
+                return False
+            run_start = start.replace(hour=hour, minute=minute)
+            run_end = run_start + timedelta(minutes=duration)
+            if self._recurring_overlaps_interval(second, run_start, run_end):
+                return True
+        return False
+
+    def recurring_conflict_message(self, rule: dict, exclude_id: str | None = None) -> str | None:
+        if not rule.get("enabled", True):
+            return None
+        for existing in self.daemon.recurring_schedules:
+            if existing.get("id") == exclude_id or not existing.get("enabled", True):
+                continue
+            if self._recurring_rules_overlap(rule, existing):
+                return f"Recurring schedule overlaps with '{existing.get('name', 'Focus Ritual')}'."
+        for scheduled in self.daemon.schedules:
+            if self._recurring_overlaps_interval(
+                rule, scheduled["start_time"], scheduled["end_time"]
+            ):
+                return "Recurring schedule overlaps with a scheduled session."
+        return None
+
+    def oneoff_conflicts_with_recurring(
+        self, start_time: datetime, end_time: datetime
+    ) -> bool:
+        return any(
+            self._recurring_overlaps_interval(rule, start_time, end_time)
+            for rule in self.daemon.recurring_schedules
+        )
+
     def recurring_schedules_response(self) -> list[dict]:
         now = datetime.now()
         result = []
@@ -393,6 +471,9 @@ class SchedulesManager:
             ok, message, new_rule = self.normalize_recurring_schedule(cmd)
             if not ok:
                 return {"status": "error", "message": message}
+            conflict = self.recurring_conflict_message(new_rule)
+            if conflict:
+                return {"status": "error", "message": conflict}
             self.daemon.recurring_schedules.append(new_rule)
             self.daemon._persist_session_lock()
             self.daemon.notifications_manager.broadcast_state_changed()
@@ -408,6 +489,14 @@ class SchedulesManager:
                     ok, message, updated = self.normalize_recurring_schedule(cmd, existing)
                     if not ok:
                         return {"status": "error", "message": message}
+                    if self._recurring_pause_is_locked(existing, updated):
+                        return {
+                            "status": "error",
+                            "message": "Cannot pause or skip a recurring schedule within 20 minutes of its next run.",
+                        }
+                    conflict = self.recurring_conflict_message(updated, rule_id)
+                    if conflict:
+                        return {"status": "error", "message": conflict}
                     self.daemon.recurring_schedules[idx] = updated
                     self.daemon._persist_session_lock()
                     self.daemon.notifications_manager.broadcast_state_changed()
@@ -419,6 +508,21 @@ class SchedulesManager:
         payload["enabled"] = enabled
         return self.cmd_update_recurring_schedule(payload)
 
+    def _recurring_pause_is_locked(self, existing: dict, updated: dict) -> bool:
+        """Prevent pause/skip changes in the final 20 minutes before a run."""
+        if not existing.get("enabled", True):
+            return False
+        pauses_rule = not updated.get("enabled", True)
+        adds_skip = bool(updated.get("skip_next_date")) and (
+            updated.get("skip_next_date") != existing.get("skip_next_date")
+        )
+        if not pauses_rule and not adds_skip:
+            return False
+        next_run = self._next_recurring_run(existing)
+        if not next_run:
+            return False
+        return (next_run - datetime.now()).total_seconds() <= 20 * 60
+
     def cmd_duplicate_recurring_schedule(self, cmd: dict) -> dict:
         with self.daemon.lock:
             rule_id = cmd.get("id")
@@ -428,12 +532,19 @@ class SchedulesManager:
             clone = dict(source)
             clone.pop("id", None)
             clone["name"] = str(cmd.get("name") or f"{source.get('name', 'Focus Ritual')} Copy").strip()
+            # A same-time duplicate would immediately conflict with its source.
+            # Keep the copy for editing, but require an explicit resume after
+            # the user chooses a non-conflicting time.
+            clone["enabled"] = False
             clone["last_triggered"] = ""
             clone["last_result"] = ""
             clone["last_result_message"] = ""
             ok, message, new_rule = self.normalize_recurring_schedule(clone)
             if not ok:
                 return {"status": "error", "message": message}
+            conflict = self.recurring_conflict_message(new_rule)
+            if conflict:
+                return {"status": "error", "message": conflict}
             self.daemon.recurring_schedules.append(new_rule)
             self.daemon._persist_session_lock()
             self.daemon.notifications_manager.broadcast_state_changed()

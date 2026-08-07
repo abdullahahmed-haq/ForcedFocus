@@ -4,7 +4,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
-from forcefocus.constants import LISTS_FILE, GROUPS_FILE, COMMON_PREFIXES, DEFAULT_BLOCKLIST, CDN_INFRASTRUCTURE_DOMAINS, SITE_BUNDLES, PERMA_BLOCK_FILE, PERMA_UNLOCK_DELAY_S
+from forcefocus.constants import LISTS_FILE, GROUPS_FILE, COMMON_PREFIXES, CDN_INFRASTRUCTURE_DOMAINS, SITE_BUNDLES, PERMA_BLOCK_FILE, PERMA_UNLOCK_DELAY_S
 from forcefocus.events import Event
 from forcefocus.utils import get_continuous_time
 
@@ -116,8 +116,6 @@ class DomainsManager:
             return {"status": "error", "message": "Invalid list name."}
 
         with self.daemon.lock:
-            if self.daemon.state.session.active:
-                return {"status": "error", "message": "Cannot modify lists during active session."}
             lists = self.load_lists()
             if domain not in lists[list_name]:
                 lists[list_name].append(domain)
@@ -131,8 +129,6 @@ class DomainsManager:
             return {"status": "error", "message": "Invalid list name."}
 
         with self.daemon.lock:
-            if self.daemon.state.session.active:
-                return {"status": "error", "message": "Cannot modify lists during active session."}
             lists = self.load_lists()
             domains = []
             for d in domains_raw:
@@ -155,8 +151,6 @@ class DomainsManager:
             return {"status": "error", "message": "Invalid list name."}
 
         with self.daemon.lock:
-            if self.daemon.state.session.active:
-                return {"status": "error", "message": "Cannot modify lists during active session."}
             lists = self.load_lists()
             if domain in lists[list_name]:
                 lists[list_name].remove(domain)
@@ -198,17 +192,15 @@ class DomainsManager:
 
     def get_blacklist_domains(self, selected_groups: list[str] = None) -> list[str]:
         lists = self.load_lists()
-        bl = lists.get("blacklist", [])
+        # A session snapshots this derived list at start. Never mutate the persisted
+        # list while adding temporary group entries for that snapshot.
+        bl = list(lists.get("blacklist", []))
 
         if selected_groups:
             groups = self.load_groups()
             for gname in selected_groups:
                 if gname in groups:
                     bl.extend(groups[gname])
-
-        if not bl:
-            for sites in DEFAULT_BLOCKLIST.values():
-                bl.extend(sites)
 
         expanded = set()
         for d in bl:

@@ -279,7 +279,9 @@ function renderStatus(data) {
   // Badge
   if (badge) {
     badge.textContent = active
-      ? data.session_type === "rescue"
+      ? data.session_type === "prayer"
+        ? "PRAYER"
+        : data.session_type === "rescue"
         ? "RESCUE"
         : data.mode.toUpperCase()
       : "Idle";
@@ -372,7 +374,9 @@ function renderStatus(data) {
       startCountdown(data.remaining_seconds);
 
       const infoType = $("#infoType");
-      if (infoType) infoType.textContent = "Standard";
+      if (infoType) {
+        infoType.textContent = data.session_type === "prayer" ? "Prayer" : "Standard";
+      }
 
       const pomoPhaseRow = $("#pomoPhaseRow");
       const pomoCycleRow = $("#pomoCycleRow");
@@ -391,7 +395,11 @@ function renderStatus(data) {
     const infoMode = $("#infoMode");
     if (infoMode) {
       infoMode.textContent =
-        data.session_type === "rescue" ? "Rescue Throne 🛡️" : data.mode;
+        data.session_type === "prayer"
+          ? "Prayer Ban 🕌"
+          : data.session_type === "rescue"
+            ? "Rescue Throne 🛡️"
+            : data.mode;
     }
 
     const infoExpires = $("#infoExpires");
@@ -406,6 +414,16 @@ function renderStatus(data) {
     } else {
       if (unlockRow) unlockRow.style.display = "none";
     }
+
+    const btnStop = $("#btnStop");
+    if (btnStop) {
+      const isPrayer = data.session_type === "prayer";
+      btnStop.disabled = isPrayer;
+      btnStop.textContent = isPrayer ? "🕌 Prayer block active" : "🔐 Request Unlock";
+      btnStop.title = isPrayer
+        ? "Prayer Ban is active and cannot be skipped from Chrome."
+        : "";
+    }
   } else {
     totalSecs = 0;
     stopCountdown();
@@ -413,6 +431,12 @@ function renderStatus(data) {
     if (timerRing) timerRing.classList.remove("break");
     const ring = $("#ringProgress");
     if (ring) ring.classList.remove("break");
+    const btnStop = $("#btnStop");
+    if (btnStop) {
+      btnStop.disabled = false;
+      btnStop.textContent = "🔐 Request Unlock";
+      btnStop.title = "";
+    }
   }
 }
 

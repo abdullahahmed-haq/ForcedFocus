@@ -44,7 +44,7 @@ class EnforcementManager(DNSMixin, FirewallMixin, SystemMixin):
 
             self._restore_dns()
             self._clear_browser_caches()
-            if self.daemon.perma_blocklist:
+            if self.daemon.perma_blocklist or getattr(self.daemon, "prayer_ban_active", ""):
                 self._enforce_firewall(True)
             else:
                 self._enforce_firewall(False)
@@ -55,8 +55,23 @@ class EnforcementManager(DNSMixin, FirewallMixin, SystemMixin):
             logging.error("Enforcement cleanup error: %s", exc)
 
     def _enforce_current_mode(self, **kwargs):
+            # A regular session may begin while Prayer is already active (for
+            # example, from a schedule). Prayer's global Ban must remain in
+            # force until the watchdog restores the session.
+            if getattr(self.daemon, "prayer_ban_active", ""):
+                self._enforce_firewall(True)
+                return
+            if (
+                self.daemon.state.session.mode == "blacklist"
+                and not self.daemon.state.active_domains
+            ):
+                # An empty blacklist is a timed focus session with no sites to
+                # block. Preserve any independent Permanent Block entries, but
+                # do not add DoH/default/session restrictions implicitly.
+                self._enforce_perma_block()
+                self._enforce_browser_policies(False)
+                return
             if self.daemon.state.session.mode in ("whitelist", "ban"):
                 threading.Thread(target=self._enforce_whitelist, daemon=True).start()
             else:
                 threading.Thread(target=self._enforce_block, daemon=True).start()
-

@@ -133,6 +133,12 @@ class WatchdogManager:
             if not self.daemon.state.session.active:
                 return
 
+            # Prayer pauses regular-session time entirely. Keep permanent-block
+            # and configuration checks above, but do not expire or transition a
+            # suspended session until its original mode is restored.
+            if getattr(self.daemon, "prayer_suspension", None):
+                return
+
             now_mono = get_continuous_time()
             self._check_intent_notification(now_mono)
             self._check_persist_lock()
@@ -161,6 +167,12 @@ class WatchdogManager:
             if current_prayer != p_name:
                 logging.info("Prayer time %s starting. Enforcing absolute network ban.", p_name)
                 self.daemon.prayer_ban_active = p_name
+                self._suspend_session_for_prayer(get_continuous_time(), now)
+                try:
+                    self.daemon.history_manager.record_prayer_event(p_name, "started", now)
+                except Exception as exc:
+                    # Tracking must never delay the higher-priority Prayer ban.
+                    logging.error("Failed to record Prayer start: %s", exc)
                 self.daemon.notifications_manager.play_sound("prayer")
                 
                 if not getattr(self.daemon, "sni_proxy", None):
@@ -176,6 +188,11 @@ class WatchdogManager:
             if current_prayer:
                 logging.info("Prayer time %s ended. Restoring normal state.", current_prayer)
                 self.daemon.prayer_ban_active = ""
+                try:
+                    self.daemon.history_manager.record_prayer_event(current_prayer, "ended", now)
+                except Exception as exc:
+                    logging.error("Failed to record Prayer end: %s", exc)
+                self._resume_session_after_prayer(get_continuous_time(), now)
                 self.daemon.notifications_manager.play_sound("end")
                 if self.daemon.state.session.active:
                     self.daemon.enforcement_manager._enforce_current_mode()
@@ -184,6 +201,59 @@ class WatchdogManager:
                     if getattr(self.daemon, "sni_proxy", None):
                         self.daemon.enforcement_manager.stop_sni_proxy()
                 self.daemon.notifications_manager.broadcast_state_changed()
+
+    def _suspend_session_for_prayer(self, now_mono, now):
+        """Freeze regular-session and Pomodoro deadlines for a Prayer takeover."""
+        if not self.daemon.state.session.active or self.daemon.prayer_suspension:
+            return
+
+        session_remaining = max(0.0, self.daemon._mono_session_end - now_mono)
+        suspension = {
+            "session_remaining_seconds": session_remaining,
+            "suspended_at": now.isoformat(),
+        }
+        if self.daemon.state.session.session_type == "pomodoro":
+            suspension["pomo_phase_remaining_seconds"] = max(
+                0.0, self.daemon._mono_pomo_phase_end - now_mono
+            )
+
+        self.daemon.prayer_suspension = suspension
+        # Keep the persisted wall-clock deadline valid while the watchdog skips
+        # regular expiry checks. It is replaced with the same remaining duration
+        # when Prayer ends.
+        self.daemon.state.session.session_expiry = now + timedelta(
+            seconds=session_remaining
+        )
+        if "pomo_phase_remaining_seconds" in suspension:
+            self.daemon.state.pomodoro.pomo_phase_expiry = now + timedelta(
+                seconds=suspension["pomo_phase_remaining_seconds"]
+            )
+        self.daemon._persist_session_lock()
+
+    def _resume_session_after_prayer(self, now_mono, now):
+        """Restore a Prayer-interrupted regular session with its exact remainder."""
+        suspension = self.daemon.prayer_suspension
+        if not suspension or not self.daemon.state.session.active:
+            self.daemon.prayer_suspension = None
+            return
+
+        session_remaining = max(
+            0.0, float(suspension.get("session_remaining_seconds", 0.0))
+        )
+        self.daemon._mono_session_end = now_mono + session_remaining
+        self.daemon.state.session.session_expiry = now + timedelta(
+            seconds=session_remaining
+        )
+        if self.daemon.state.session.session_type == "pomodoro":
+            pomo_remaining = max(
+                0.0, float(suspension.get("pomo_phase_remaining_seconds", 0.0))
+            )
+            self.daemon._mono_pomo_phase_end = now_mono + pomo_remaining
+            self.daemon.state.pomodoro.pomo_phase_expiry = now + timedelta(
+                seconds=pomo_remaining
+            )
+        self.daemon.prayer_suspension = None
+        self.daemon._persist_session_lock()
 
     def _check_recurring_schedules(self, now, now_mono):
         cmd_to_start = None
@@ -213,27 +283,41 @@ class WatchdogManager:
                         
                         if start_dt <= now <= grace_end:
                             trigger_date_str = start_dt.strftime("%Y-%m-%d")
-                            if r_sch.get("last_triggered") != trigger_date_str:
+                            if r_sch.get("last_triggered") == trigger_date_str:
+                                continue
+                            if r_sch.get("skip_next_date") == trigger_date_str:
                                 r_sch["last_triggered"] = trigger_date_str
-                                r_sch["last_result"] = "starting"
-                                r_sch["last_result_message"] = ""
+                                r_sch["last_result"] = "skipped"
+                                r_sch["last_result_message"] = "Skipped next occurrence."
+                                r_sch["skip_next_date"] = ""
                                 r_sch["updated_at"] = datetime.now().isoformat()
-                                cmd_to_start = {
-                                    "action": "start",
-                                    "duration_minutes": duration,
-                                    "mode": r_sch.get("mode", "blacklist"),
-                                    "groups": r_sch.get("groups", []),
-                                    "session_type": r_sch.get("session_type", "standard"),
-                                }
-                                if r_sch.get("session_type") == "pomodoro":
-                                    cmd_to_start["focus_minutes"] = r_sch.get("focus_minutes", 25)
-                                    cmd_to_start["break_minutes"] = r_sch.get("break_minutes", 5)
-                                    cmd_to_start["cycles"] = r_sch.get("cycles", 4)
-                                is_recurring_trigger = True
-                                recurring_rule_id = r_sch.get("id")
                                 self.daemon._persist_session_lock()
-                                logging.info("Recurring schedule %s triggered.", r_sch.get("id"))
-                                break
+                                self.daemon.notifications_manager.broadcast_state_changed()
+                                logging.info(
+                                    "Recurring schedule %s skipped for %s.",
+                                    r_sch.get("id"), trigger_date_str,
+                                )
+                                continue
+                            r_sch["last_triggered"] = trigger_date_str
+                            r_sch["last_result"] = "starting"
+                            r_sch["last_result_message"] = ""
+                            r_sch["updated_at"] = datetime.now().isoformat()
+                            cmd_to_start = {
+                                "action": "start",
+                                "duration_minutes": duration,
+                                "mode": r_sch.get("mode", "blacklist"),
+                                "groups": r_sch.get("groups", []),
+                                "session_type": r_sch.get("session_type", "standard"),
+                            }
+                            if r_sch.get("session_type") == "pomodoro":
+                                cmd_to_start["focus_minutes"] = r_sch.get("focus_minutes", 25)
+                                cmd_to_start["break_minutes"] = r_sch.get("break_minutes", 5)
+                                cmd_to_start["cycles"] = r_sch.get("cycles", 4)
+                            is_recurring_trigger = True
+                            recurring_rule_id = r_sch.get("id")
+                            self.daemon._persist_session_lock()
+                            logging.info("Recurring schedule %s triggered.", r_sch.get("id"))
+                            break
         return is_recurring_trigger, cmd_to_start, recurring_rule_id
 
     def _check_oneoff_schedules(self, now):
@@ -266,7 +350,9 @@ class WatchdogManager:
                 "Scheduled Session",
                 "Your scheduled focus session is starting now.",
             )
-        result = self.daemon.session_manager._start_session(cmd_to_start)
+        execution_cmd = dict(cmd_to_start)
+        execution_cmd["scheduled_execution"] = True
+        result = self.daemon.session_manager._start_session(execution_cmd)
         if is_recurring_trigger and recurring_rule_id:
             with self.daemon.lock:
                 for r_sch in self.daemon.recurring_schedules:

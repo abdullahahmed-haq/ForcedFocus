@@ -30,3 +30,26 @@ def test_context_menu_blacklist_domain_is_saved_when_idle(mock_daemon):
     assert "example.com" in response["lists"]["blacklist"]
     assert mock_daemon.state_revision == before_revision + 1
     assert mock_daemon.session_manager.cmd_get_status()["state_revision"] == before_revision + 1
+
+
+def test_list_edit_during_active_session_updates_only_the_next_session(mock_daemon):
+    mock_daemon.state.session.active = True
+    mock_daemon.state.active_domains = ["snapshot.example"]
+    mock_daemon.session_base_domains = ["snapshot.example"]
+
+    response = mock_daemon.domains_manager.cmd_add_domain(
+        {"list": "blacklist", "domain": "next-session.example"}
+    )
+
+    assert response["status"] == "ok"
+    assert "next-session.example" in response["lists"]["blacklist"]
+    assert mock_daemon.state.active_domains == ["snapshot.example"]
+    assert mock_daemon.session_base_domains == ["snapshot.example"]
+
+
+def test_empty_blacklist_produces_no_blocked_domains(mock_daemon):
+    mock_daemon.domains_manager.save_lists({"blacklist": [], "whitelist": []})
+
+    domains = mock_daemon.domains_manager.get_blacklist_domains([])
+
+    assert domains == []
