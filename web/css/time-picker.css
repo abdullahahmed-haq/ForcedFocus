@@ -1,0 +1,322 @@
+.ff-time-input {
+  cursor: pointer;
+  color-scheme: dark;
+  font-variant-numeric: tabular-nums;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8'%3E%3Ccircle cx='12' cy='12' r='8.5' stroke-width='1.75'/%3E%3Cpath d='M12 7.5v5l3.25 2' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 12px center !important;
+  background-size: 18px 18px !important;
+  padding-right: 42px !important;
+}
+
+.ff-time-input:hover:not(:disabled) {
+  border-color: var(--border-active, rgba(99, 102, 241, 0.55)) !important;
+}
+
+.ff-time-input:focus-visible {
+  outline: 2px solid var(--accent-blue, #6366f1) !important;
+  outline-offset: 2px;
+}
+
+.ff-time-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ff-time-picker {
+  width: min(380px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  margin: auto;
+  padding: 0;
+  overflow: auto;
+  color: var(--text-primary, #fcfcfd);
+  background: #11111c;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  box-shadow: 0 8px 8px rgba(0, 0, 0, 0.42);
+  font-family: var(--ff-font, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  opacity: 0;
+  transform: translateY(8px) scale(0.985);
+  transition: opacity 180ms cubic-bezier(0.16, 1, 0.3, 1), transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ff-time-picker[open] {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.ff-time-picker::backdrop {
+  background: rgba(2, 2, 8, 0.76);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.ff-time-picker-panel {
+  padding: 20px;
+}
+
+.ff-time-picker-header,
+.ff-time-picker-section-heading,
+.ff-time-picker-actions,
+.ff-time-picker-actions > div {
+  display: flex;
+  align-items: center;
+}
+
+.ff-time-picker-header,
+.ff-time-picker-actions {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ff-time-picker-context {
+  margin: 0 0 3px;
+  color: var(--text-secondary, #94a3b8);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.ff-time-picker-header h2 {
+  margin: 0;
+  color: var(--text-primary, #fcfcfd);
+  font-size: 18px;
+  line-height: 1.3;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.ff-time-picker-close {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  flex: 0 0 auto;
+  color: var(--text-secondary, #94a3b8);
+  background: rgba(255, 255, 255, 0.045);
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background-color 160ms cubic-bezier(0.16, 1, 0.3, 1), color 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ff-time-picker-close:hover {
+  color: var(--text-primary, #fcfcfd);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.ff-time-picker-close svg,
+.ff-time-picker-clock svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ff-time-picker-preview {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  margin: 18px 0;
+  min-height: 74px;
+  padding: 14px 18px;
+  color: var(--text-primary, #fcfcfd);
+  background: rgba(99, 102, 241, 0.11);
+  border: 1px solid rgba(99, 102, 241, 0.32);
+  border-radius: 14px;
+  box-sizing: border-box;
+}
+
+.ff-time-picker-clock {
+  align-self: center;
+  display: inline-flex;
+  margin-right: 4px;
+  color: #a5b4fc;
+}
+
+.ff-time-picker-preview-value {
+  font-size: 34px;
+  line-height: 1;
+  font-weight: 720;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+}
+
+.ff-time-picker-preview-period {
+  color: #c7d2fe;
+  font-size: 14px;
+  line-height: 1;
+  font-weight: 750;
+}
+
+.ff-time-picker-section + .ff-time-picker-section {
+  margin-top: 16px;
+}
+
+.ff-time-picker-section-heading {
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: var(--text-secondary, #94a3b8);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.ff-time-picker-section-heading span:last-child {
+  color: var(--text-muted, #718096);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.ff-time-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.ff-time-choice,
+.ff-time-picker-period button {
+  min-width: 0;
+  min-height: 38px;
+  padding: 6px 4px;
+  color: var(--text-secondary, #94a3b8);
+  background: rgba(255, 255, 255, 0.04);
+  border: 0;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background-color 150ms cubic-bezier(0.16, 1, 0.3, 1), color 150ms cubic-bezier(0.16, 1, 0.3, 1), transform 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ff-time-choice:hover,
+.ff-time-picker-period button:hover {
+  color: var(--text-primary, #fcfcfd);
+  background: rgba(255, 255, 255, 0.085);
+}
+
+.ff-time-choice:active,
+.ff-time-picker-period button:active {
+  transform: scale(0.96);
+}
+
+.ff-time-choice.is-selected,
+.ff-time-picker-period button.is-selected {
+  color: #fff;
+  background: var(--accent-blue, #6366f1);
+}
+
+.ff-time-picker-period {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 5px;
+  margin-top: 16px;
+  padding: 4px;
+  background: rgba(255, 255, 255, 0.035);
+  border-radius: 12px;
+}
+
+.ff-time-picker-period button {
+  min-height: 40px;
+  font-size: 13px;
+}
+
+.ff-time-picker button:focus-visible {
+  outline: 2px solid #a5b4fc;
+  outline-offset: 2px;
+}
+
+.ff-time-picker-actions {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.ff-time-picker-actions > div {
+  gap: 8px;
+}
+
+.ff-time-picker-actions button {
+  min-height: 38px;
+  padding: 8px 13px;
+  border: 0;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms cubic-bezier(0.16, 1, 0.3, 1), color 150ms cubic-bezier(0.16, 1, 0.3, 1), transform 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ff-time-picker-actions button:active {
+  transform: scale(0.97);
+}
+
+.ff-time-picker-now {
+  color: #a5b4fc;
+  background: transparent;
+}
+
+.ff-time-picker-now:hover {
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.ff-time-picker-cancel {
+  color: var(--text-secondary, #94a3b8);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ff-time-picker-cancel:hover {
+  color: var(--text-primary, #fcfcfd);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.ff-time-picker-confirm {
+  color: #fff;
+  background: var(--accent-blue, #6366f1);
+}
+
+.ff-time-picker-confirm:hover {
+  background: #7477f5;
+}
+
+@media (max-width: 380px) {
+  .ff-time-picker-panel {
+    padding: 16px;
+  }
+
+  .ff-time-picker-preview {
+    margin: 14px 0;
+    min-height: 64px;
+  }
+
+  .ff-time-picker-preview-value {
+    font-size: 30px;
+  }
+
+  .ff-time-choice {
+    min-height: 34px;
+  }
+
+  .ff-time-picker-section + .ff-time-picker-section,
+  .ff-time-picker-period {
+    margin-top: 12px;
+  }
+
+  .ff-time-picker-actions {
+    margin-top: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ff-time-picker,
+  .ff-time-picker button {
+    transition-duration: 0.01ms !important;
+  }
+}

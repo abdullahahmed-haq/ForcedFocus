@@ -6,30 +6,27 @@
   <link rel="icon" type="image/png" href="icons/icon48.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ForcedFocus</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="popup.css" />
 </head>
 
 <body>
   <!-- Offline State -->
-  <div class="offline hidden" id="offline">
+  <div class="offline hidden" id="offline" role="status" aria-live="polite">
     <div class="offline-icon">⚡</div>
     <p>Web server not running</p>
     <span>Start it with: <code>forcefocus web</code></span>
   </div>
 
   <!-- Main Content -->
-  <div class="container" id="main">
+  <main class="container" id="main">
     <!-- Header -->
-    <div class="header">
+    <header class="header">
       <div class="logo">
         <div class="logo-icon">⚡</div>
-        <span>ForcedFocus</span>
+        <h1>ForcedFocus</h1>
       </div>
       <div class="badge" id="badge">Idle</div>
-    </div>
+    </header>
 
     <!-- Timer -->
     <div class="timer-box" id="timerBox">
@@ -47,7 +44,7 @@
 
     <!-- Quick Controls (idle) -->
     <div class="controls" id="idleControls">
-      <div class="mode-row">
+      <div class="mode-row" role="group" aria-label="Blocking mode">
         <button class="mode-chip active" data-mode="blacklist" id="chipBlacklist">
           🚫 Blacklist
         </button>
@@ -58,7 +55,7 @@
           ⛔ Ban
         </button>
       </div>
-      <div class="type-row">
+      <div class="type-row" role="group" aria-label="Session type">
         <button class="type-chip active" data-type="standard">
           ⏱ Standard
         </button>
@@ -121,7 +118,7 @@
             padding: 15px;
             background: rgba(239, 68, 68, 0.05);
             border: 1px solid rgba(239, 68, 68, 0.2);
-            border-radius: 21px;
+            border-radius: 16px;
           ">
         <div style="
               display: flex;
@@ -129,14 +126,14 @@
               align-items: center;
               margin-bottom: 8px;
             ">
-          <span style="font-size: 12px; font-weight: 600; color: var(--red)">🛡️ Rescue Throne</span>
+          <span style="font-size: var(--ff-type-label); font-weight: 600; color: var(--danger)">🛡️ Rescue Mode</span>
           <select id="rescueDuration" aria-label="Rescue duration in minutes" style="
                 background: rgba(255, 255, 255, 0.05);
                 border: 1px solid rgba(255, 255, 255, 0.1);
                 color: var(--text);
                 border-radius: var(--rxs);
                 padding: 2px 6px;
-                font-size: 11px;
+                font-size: var(--ff-type-label);
                 outline: none;
                 cursor: pointer;
               ">
@@ -147,7 +144,7 @@
             <option value="30" style="background: var(--bg2)">30 min</option>
           </select>
         </div>
-        <button class="btn-rescue" id="btnRescue">⚡ Activate Rescue</button>
+        <button class="btn-rescue" id="btnRescue">Activate Rescue Mode</button>
       </div>
 
       <button class="btn-start" id="btnStart">▶ Start Blocking</button>
@@ -161,17 +158,17 @@
             padding: 12px;
             background: rgba(99, 102, 241, 0.1);
             border: 1px solid rgba(99, 102, 241, 0.25);
-            border-radius: 21px;
+            border-radius: 16px;
             text-align: start;
           ">
         <div style="
-              font-size: 13px;
+              font-size: var(--ff-type-body);
               color: var(--text2);
               font-weight: 500;
             ">
           🎯 Session goal is: '<span id="activeIntentDisplay" dir="auto" style="font-weight: 700; color: var(--text);"></span>'
         </div>
-        <div id="activeIntentTasks" style="margin-top: 8px; text-align: start; font-size: 12px; color: var(--text);"></div>
+        <div id="activeIntentTasks" style="margin-top: 8px; text-align: start; font-size: var(--ff-type-label); color: var(--text);"></div>
       </div>
       <div class="info-row">
         <span class="info-label">Mode</span>
@@ -204,10 +201,55 @@
       <button class="btn-stop" id="btnStop">🔐 Request Unlock</button>
     </div>
 
+    <details class="sleep-schedule" id="sleepSchedule">
+      <summary>
+        <span>Sleep Schedule</span>
+        <span class="sleep-summary" id="sleepSummary">Loading...</span>
+      </summary>
+      <div class="sleep-body">
+        <p class="sleep-status" id="sleepStatus" role="status" aria-live="polite"></p>
+        <label class="sleep-enabled" for="sleepEnabled">
+          <input type="checkbox" id="sleepEnabled" />
+          <span>Enable scheduled sleep blocking</span>
+        </label>
+        <fieldset class="sleep-days" id="sleepDays">
+          <legend>Bedtime days</legend>
+          <label><input type="checkbox" value="0" /> Mon</label>
+          <label><input type="checkbox" value="1" /> Tue</label>
+          <label><input type="checkbox" value="2" /> Wed</label>
+          <label><input type="checkbox" value="3" /> Thu</label>
+          <label><input type="checkbox" value="4" /> Fri</label>
+          <label><input type="checkbox" value="5" /> Sat</label>
+          <label><input type="checkbox" value="6" /> Sun</label>
+        </fieldset>
+        <div class="sleep-times">
+          <label for="sleepTime">Sleep<input type="time" id="sleepTime" required /></label>
+          <label for="wakeTime">Wake<input type="time" id="wakeTime" required /></label>
+        </div>
+        <label class="sleep-mode-label" for="sleepMode">Blocking mode
+          <select id="sleepMode">
+            <option value="blacklist">Blacklist selected sites</option>
+            <option value="whitelist">Only selected sites</option>
+            <option value="ban">Block all sites</option>
+          </select>
+        </label>
+        <div class="sleep-sites" id="sleepSites">
+          <label for="sleepSiteInput" id="sleepSiteLabel">Blocked sites</label>
+          <div class="sleep-site-entry">
+            <input type="text" id="sleepSiteInput" inputmode="url" autocomplete="off" placeholder="example.com" />
+            <button type="button" id="addSleepSite">Add</button>
+          </div>
+          <ul id="sleepSiteList" aria-live="polite"></ul>
+        </div>
+        <p class="sleep-error hidden" id="sleepError" role="alert"></p>
+        <button class="btn-sleep-save" id="saveSleepSchedule" type="button">Save Sleep Schedule</button>
+      </div>
+    </details>
+
     <!-- Block Details Dialog -->
-    <div class="stop-dialog hidden" id="blockDetailsDialog">
+    <div class="stop-dialog hidden" id="blockDetailsDialog" role="dialog" aria-labelledby="blockDetailsTitle">
       <div class="block-details-header">
-        <span>📋</span> <strong>Block Details</strong>
+        <span aria-hidden="true">📋</span> <strong id="blockDetailsTitle">Block Details</strong>
       </div>
       <div class="block-details-body" id="blockDetailsBody">
         <div class="detail-row"><span class="detail-label">Type</span><span class="detail-value" id="detailType">—</span></div>
@@ -217,7 +259,7 @@
         <div class="detail-row"><span class="detail-label">Groups</span><span class="detail-value" id="detailGroups">—</span></div>
         <div class="detail-row"><span class="detail-label">Domains</span><span class="detail-value" id="detailDomains">—</span></div>
       </div>
-      <div class="block-details-error hidden" id="blockDetailsError">
+      <div class="block-details-error hidden" id="blockDetailsError" role="alert">
         <span id="blockDetailsErrorMsg"></span>
         <button class="detail-retry-btn" id="blockDetailsRetry">↻ Retry</button>
       </div>
@@ -228,11 +270,11 @@
     </div>
 
     <!-- Intent Dialog -->
-    <div class="stop-dialog hidden" id="intentDialog">
-      <p>🎯 Focus Intent:</p>
+    <div class="stop-dialog hidden" id="intentDialog" role="dialog" aria-labelledby="intentDialogTitle">
+      <p id="intentDialogTitle">🎯 Focus Intent</p>
       <input type="text" id="intentDialogInput" dir="auto" aria-label="Focus Intent" placeholder="e.g. Write project spec"
         autocomplete="off" />
-      <textarea id="intentTasksInput" dir="auto" aria-label="Tasks" placeholder="Optional: subtasks (one per line)" rows="3" style="width: 100%; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.2); padding: 8px; color: var(--text); outline: none; font-size: 12px; resize: vertical; margin-top: 8px; box-sizing: border-box; font-family: inherit;"></textarea>
+      <textarea id="intentTasksInput" dir="auto" aria-label="Tasks" placeholder="Optional: subtasks (one per line)" rows="3" style="width: 100%; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.2); padding: 8px; color: var(--text); outline: none; font-size: var(--ff-type-label); resize: vertical; margin-top: 8px; box-sizing: border-box; font-family: inherit;"></textarea>
       <div class="dialog-btns">
         <button class="dbtn dbtn-cancel" id="btnCancelIntent">Cancel</button>
         <button class="dbtn dbtn-confirm" id="btnConfirmIntent">Start</button>
@@ -240,22 +282,22 @@
     </div>
 
     <!-- Stop Dialog -->
-    <div class="stop-dialog hidden" id="stopDialog">
-      <p>Enter kill-switch passphrase:</p>
+    <div class="stop-dialog hidden" id="stopDialog" role="dialog" aria-labelledby="stopDialogTitle">
+      <p id="stopDialogTitle">Enter kill-switch passphrase</p>
       <input type="password" id="passInput" aria-label="Kill-switch passphrase" placeholder="Passphrase"
         autocomplete="off" />
       <div class="dialog-btns">
         <button class="dbtn dbtn-cancel" id="btnCancel">Cancel</button>
         <button class="dbtn dbtn-confirm" id="btnConfirm">Unlock</button>
       </div>
-      <p class="err hidden" id="errMsg"></p>
+      <p class="err hidden" id="errMsg" role="alert"></p>
     </div>
 
     <!-- Footer -->
     <div class="footer">
       <a href="http://127.0.0.1:7070" target="_blank" id="openUI">Open Full UI ↗</a>
     </div>
-  </div>
+  </main>
 
   <script type="module" src="popup.js"></script>
 </body>

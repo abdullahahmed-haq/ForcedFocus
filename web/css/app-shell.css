@@ -1,0 +1,108 @@
+/* Shared application shell for dashboard and settings. */
+
+html[data-app-shell] {
+  background: #09090b;
+  color-scheme: dark;
+}
+
+body[data-app-shell] {
+  --radius: 20px;
+  --radius-sm: 16px;
+  --radius-md: 16px;
+  --radius-xs: 14px;
+  --glass: blur(12px) saturate(120%);
+  min-height: 100vh;
+  isolation: isolate;
+  background-color: #09090b;
+  color: var(--text-primary, #fcfcfd);
+  font-family: var(--ff-font);
+}
+
+body[data-app-shell]::before,
+body[data-app-shell]::after {
+  content: "";
+  position: fixed;
+  z-index: 0;
+  width: 60vw;
+  height: 60vh;
+  border-radius: 50%;
+  filter: blur(120px);
+  mix-blend-mode: screen;
+  opacity: 0.15;
+  pointer-events: none;
+}
+
+body[data-app-shell]::before {
+  top: -20vh;
+  left: -10vw;
+  background: #4f46e5;
+}
+
+body[data-app-shell]::after {
+  right: -10vw;
+  bottom: -20vh;
+  background: #9333ea;
+}
+
+body[data-app-shell] > .app,
+body[data-app-shell] > .max-w-6xl {
+  position: relative;
+  z-index: 1;
+}
+
+:where(body[data-app-shell]) :focus-visible {
+  outline: 2px solid var(--accent-blue, #6366f1);
+  outline-offset: 3px;
+}
+
+/* Text-entry controls use a quiet neutral border instead of an accent halo. */
+body[data-app-shell] input:focus,
+body[data-app-shell] select:focus,
+body[data-app-shell] textarea:focus {
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  box-shadow: none !important;
+}
+
+body[data-app-shell] input:focus-visible,
+body[data-app-shell] select:focus-visible,
+body[data-app-shell] textarea:focus-visible {
+  outline: none !important;
+  outline-offset: 0;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  box-shadow: none !important;
+}
+
+body[data-app-shell] input::placeholder,
+body[data-app-shell] textarea::placeholder {
+  color: var(--text-secondary, #94a3b8) !important;
+  opacity: 1;
+}
+
+.skip-link {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 300;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #fcfcfd;
+  color: #09090b;
+  font-weight: 700;
+  transform: translateY(-150%);
+  transition: transform 180ms ease-out;
+}
+
+.skip-link:focus-visible {
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-app-shell]::before,
+  body[data-app-shell]::after {
+    animation: none;
+  }
+
+  .skip-link {
+    transition: none;
+  }
+}

@@ -6,6 +6,10 @@ The root daemon is the privileged boundary. HTTP binds only to loopback and
 mutations require the per-launch API token. CLI commands use a mode-0600 Unix
 socket. Browser origins are restricted to configured extension identifiers.
 
+Prayer scheduling optionally crosses the local trust boundary to retrieve a
+monthly calendar from AlAdhan over HTTPS using the configured coordinates and
+calculation method. Request URLs containing coordinates must never be logged.
+
 Stage 1 introduces a `SystemAdapter` boundary so a later release can move the
 minimum required operations into a dedicated privileged helper. Until that
 boundary is complete, the project must not claim least-privilege architecture.

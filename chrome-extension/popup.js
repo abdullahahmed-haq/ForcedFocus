@@ -3,10 +3,12 @@
  * Controls session start/stop, displays timer, and manages UI state.
  */
 
-import { formatTime } from "./shared/utils.js";
+import { extractDomain, formatTime } from "./shared/utils.js";
 import { renderIntentTasks } from "./shared/intent-tasks.js";
+import { api as sharedApi } from "./shared/api.js";
 
 const API = "http://127.0.0.1:7070";
+const API_VERSION = 1;
 let mode = "blacklist";
 let duration = 120;
 let animationFrameId = null;
@@ -20,10 +22,37 @@ let pomoCycles = 4;
 let selectedGroups = new Set();
 let availableGroups = {};
 
-let apiToken = ""; // A2: Per-launch API token for mutation auth
+let sleepSchedule = null;
+let pendingSleepSchedule = null;
+let sleepFormInitialized = false;
+let sleepFormDirty = false;
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
+const PRESSED_CONTROL_SELECTOR = ".mode-chip, .type-chip, .dur-chip, .pomo-chip, .group-chip";
+
+function syncPressedControls(root = document) {
+  const controls = root.matches?.(PRESSED_CONTROL_SELECTOR)
+    ? [root]
+    : [...(root.querySelectorAll?.(PRESSED_CONTROL_SELECTOR) || [])];
+  controls.forEach((control) => {
+    if (control.tagName === "BUTTON") {
+      control.setAttribute("aria-pressed", String(control.classList.contains("active")));
+    }
+  });
+}
+
+function initializePressedControls() {
+  syncPressedControls();
+  new MutationObserver((records) => {
+    records.forEach((record) => {
+      if (record.type === "attributes") syncPressedControls(record.target);
+      record.addedNodes?.forEach((node) => {
+        if (node.nodeType === Node.ELEMENT_NODE) syncPressedControls(node);
+      });
+    });
+  }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
+}
 
 // ── Toast (R8: replaces alert() which is blocked in extension popups) ────────
 
@@ -32,6 +61,8 @@ function showError(msg) {
   if (existing) existing.remove();
   const el = document.createElement("div");
   el.className = "popup-toast";
+  el.setAttribute("role", "alert");
+  el.setAttribute("aria-live", "assertive");
   el.textContent = msg;
   el.style.cssText =
     "position:fixed;top:8px;left:8px;right:8px;padding:10px;background:rgba(239,68,68,0.95);color:white;border-radius:12px;font-size:12px;font-weight:500;z-index:999;text-align:center;backdrop-filter:blur(8px);box-shadow:0 4px 16px rgba(0,0,0,0.3);animation:fadeIn 0.2s ease;";
@@ -43,72 +74,70 @@ function showError(msg) {
   }, 4000);
 }
 
-// ── API (A2: with token auth + 401 auto-retry) ──────────────────────────────
+document.addEventListener("forcedfocus:intent-error", (event) => {
+  showError(event.detail?.message || "The task update could not be saved.");
+});
 
-async function loadApiToken() {
-  if (window.apiToken) {
-    apiToken = window.apiToken;
-    return;
+// ── API ─────────────────────────────────────────────────────────────────────
+
+const api = (method, path, body = null) => sharedApi(method, path, body, API);
+
+async function checkStartupState() {
+  const [status, version, health] = await Promise.all([
+    api("GET", "/api/status"),
+    api("GET", "/api/version"),
+    api("GET", "/api/health"),
+  ]);
+  if (status.status !== "ok" || version.status !== "ok" || health.status !== "ok") {
+    return {
+      ok: false,
+      title: "Local service unavailable",
+      message: "Start ForcedFocus, then retry. Existing browser rules remain unchanged.",
+    };
   }
-  try {
-    const res = await fetch(API + "/", {
-      signal: AbortSignal.timeout(2000),
-    });
-    const html = await res.text();
-    const match = html.match(/window\.apiToken\s*=\s*["']([^"']+)["']/);
-    if (match && match[1]) {
-      apiToken = match[1];
-    }
-  } catch (e) {
-    console.error("[ForcedFocus] Token load failed:", e);
+  if (health.recovery_required) {
+    return {
+      ok: false,
+      title: "Recovery required",
+      message: "Run forcefocus doctor before changing network settings.",
+    };
   }
+  if (health.migration_in_progress) {
+    return {
+      ok: false,
+      title: "State migration in progress",
+      message: "Wait for migration validation to finish, then retry.",
+    };
+  }
+  const extensionVersion = chrome.runtime.getManifest().version;
+  if (version.product_version !== extensionVersion || Number(version.api_version) !== API_VERSION) {
+    return {
+      ok: false,
+      title: "Version mismatch",
+      message: `Extension ${extensionVersion}; daemon ${version.product_version || "unknown"}. Update ForcedFocus before continuing.`,
+    };
+  }
+  return { ok: true };
 }
 
-async function api(method, path, body = null) {
-  const headers = { "Content-Type": "application/json" };
-  if (apiToken) {
-    headers["X-API-Token"] = apiToken;
+function showStartupState(state) {
+  const offline = $("#offline");
+  const main = $("#main");
+  if (!offline || !main) return;
+  offline.querySelector("p").textContent = state.title;
+  offline.querySelector("span").textContent = state.message;
+  let retry = $("#btnRetryConnection");
+  if (!retry) {
+    retry = document.createElement("button");
+    retry.id = "btnRetryConnection";
+    retry.type = "button";
+    retry.className = "btn-start";
+    retry.textContent = "Retry";
+    retry.addEventListener("click", () => window.location.reload());
+    offline.appendChild(retry);
   }
-  const opts = {
-    method,
-    headers,
-    signal: AbortSignal.timeout(5000),
-  };
-  if (body) opts.body = JSON.stringify(body);
-
-  try {
-    const res = await fetch(API + path, opts);
-    // A2: Auto-refresh token on 401 (daemon restarted)
-    if (res.status === 401) {
-      await loadApiToken();
-      if (apiToken) headers["X-API-Token"] = apiToken;
-      const retry = await fetch(API + path, {
-        method,
-        headers,
-        body: opts.body,
-        signal: AbortSignal.timeout(5000), // B3: Prevent indefinite hang on retry
-      });
-      return await retry.json();
-    }
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    }
-    return await res.json();
-  } catch (err) {
-    console.error("[ForcedFocus] API error:", err.message);
-    return { status: "error", message: "Server unreachable." };
-  }
-}
-
-async function checkServer() {
-  try {
-    const res = await fetch(API + "/api/status", {
-      signal: AbortSignal.timeout(2000),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
+  offline.classList.remove("hidden");
+  main.classList.add("hidden");
 }
 
 function delay(ms) {
@@ -235,7 +264,8 @@ function renderGroups() {
   grid.textContent = "";
 
   names.forEach((name) => {
-    const chip = document.createElement("div");
+    const chip = document.createElement("button");
+    chip.type = "button";
     chip.className = "group-chip" + (selectedGroups.has(name) ? " active" : "");
     chip.textContent = name;
     chip.onclick = () => {
@@ -270,6 +300,216 @@ function stopCountdown() {
   if (ringProgress) ringProgress.style.strokeDashoffset = 326.73;
 }
 
+// ── Sleep Schedule ───────────────────────────────────────────────────────────
+
+function formatSleepDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString([], {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatWakeTime(value) {
+  if (!value) return "";
+  if (/^\d{2}:\d{2}(:\d{2})?$/.test(value)) return value.slice(0, 5);
+  return formatSleepDate(value);
+}
+
+function setSleepError(message = "") {
+  const error = $("#sleepError");
+  if (!error) return;
+  error.textContent = message;
+  error.classList.toggle("hidden", !message);
+}
+
+function sleepSitesForMode(config = pendingSleepSchedule || sleepSchedule) {
+  if (!config || config.mode === "ban") return [];
+  return Array.isArray(config[config.mode]) ? config[config.mode] : [];
+}
+
+function renderSleepSites() {
+  const sites = $("#sleepSites");
+  const list = $("#sleepSiteList");
+  const label = $("#sleepSiteLabel");
+  const config = pendingSleepSchedule || sleepSchedule;
+  if (!sites || !list || !label || !config) return;
+
+  const isBan = config.mode === "ban";
+  sites.classList.toggle("hidden", isBan);
+  label.textContent = config.mode === "whitelist" ? "Allowed sites" : "Blocked sites";
+  list.textContent = "";
+
+  sleepSitesForMode(config).forEach((site) => {
+    const item = document.createElement("li");
+    item.className = "sleep-site";
+    item.append(document.createTextNode(site));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove ${site}`);
+    remove.addEventListener("click", () => {
+      const target = pendingSleepSchedule || sleepSchedule;
+      target[target.mode] = target[target.mode].filter((value) => value !== site);
+      sleepFormDirty = true;
+      renderSleepSites();
+    });
+    item.appendChild(remove);
+    list.appendChild(item);
+  });
+}
+
+function renderSleepSummary(summary = {}) {
+  const summaryEl = $("#sleepSummary");
+  const statusEl = $("#sleepStatus");
+  if (!summaryEl || !statusEl) return;
+
+  if (!summary.enabled) {
+    summaryEl.textContent = "Off";
+    statusEl.textContent = "Sleep blocking is off.";
+    return;
+  }
+  if (summary.active) {
+    const wake = formatWakeTime(summary.wake_at);
+    const remaining = Number.isFinite(summary.remaining_seconds)
+      ? ` ${formatTime(Math.max(0, summary.remaining_seconds))} remaining`
+      : "";
+    summaryEl.textContent = "Active";
+    statusEl.textContent = `Sleep active${wake ? ` until ${wake}` : ""}.${remaining}`;
+  } else if (summary.next_start_at) {
+    const start = formatSleepDate(summary.next_start_at);
+    summaryEl.textContent = "Scheduled";
+    statusEl.textContent = `Next bedtime ${start}.`;
+  } else {
+    summaryEl.textContent = "Scheduled";
+    statusEl.textContent = "Waiting for the next bedtime.";
+  }
+
+  if ((summary.has_pending_changes || summary.pending_changes) && summary.pending_apply_at) {
+    statusEl.textContent += ` Changes queued until ${formatSleepDate(summary.pending_apply_at)}.`;
+  }
+}
+
+function renderSleepSchedule(data, overwriteForm = false) {
+  const config = data.pending_config || data.sleep_schedule;
+  if (!config) {
+    renderSleepSummary(data.summary || {});
+    return;
+  }
+  sleepSchedule = data.sleep_schedule || sleepSchedule;
+  pendingSleepSchedule = data.pending_config || null;
+  if (data.summary) renderSleepSummary(data.summary);
+
+  if (!overwriteForm && (sleepFormInitialized || sleepFormDirty)) {
+    return;
+  }
+
+  const enabled = $("#sleepEnabled");
+  const sleepTime = $("#sleepTime");
+  const wakeTime = $("#wakeTime");
+  const modeSelect = $("#sleepMode");
+  if (enabled) enabled.checked = Boolean(config.enabled);
+  if (sleepTime) sleepTime.value = config.sleep_time || "22:00";
+  if (wakeTime) wakeTime.value = config.wake_time || "07:00";
+  if (modeSelect) modeSelect.value = config.mode || "blacklist";
+  $$("#sleepDays input").forEach((input) => {
+    input.checked = Array.isArray(config.days_of_week) && config.days_of_week.includes(Number(input.value));
+  });
+  sleepFormInitialized = true;
+  sleepFormDirty = false;
+  renderSleepSites();
+}
+
+async function loadSleepSchedule(overwriteForm = false) {
+  const data = await api("GET", "/api/sleep-schedule");
+  if (data.status === "ok") {
+    renderSleepSchedule(data, overwriteForm);
+  } else {
+    setSleepError(data.message || "Unable to load Sleep Schedule.");
+  }
+}
+
+function addSleepSite() {
+  const input = $("#sleepSiteInput");
+  const config = pendingSleepSchedule || sleepSchedule;
+  if (!input || !config || config.mode === "ban") return;
+  const domain = extractDomain(input.value);
+  if (!domain) {
+    setSleepError("Enter a valid domain, such as example.com.");
+    input.focus();
+    return;
+  }
+  if (!Array.isArray(config[config.mode])) config[config.mode] = [];
+  if (!config[config.mode].includes(domain)) config[config.mode].push(domain);
+  input.value = "";
+  sleepFormDirty = true;
+  setSleepError("");
+  renderSleepSites();
+}
+
+async function saveSleepSchedule() {
+  const config = pendingSleepSchedule || sleepSchedule;
+  if (!config) return;
+  const enabled = $("#sleepEnabled")?.checked || false;
+  const modeValue = $("#sleepMode")?.value || "blacklist";
+  const days = Array.from($$("#sleepDays input:checked"), (input) => Number(input.value));
+  const sleepTime = $("#sleepTime")?.value || "";
+  const wakeTime = $("#wakeTime")?.value || "";
+  const relevantSites = Array.isArray(config[modeValue]) ? config[modeValue] : [];
+
+  if (!sleepTime || !wakeTime || sleepTime === wakeTime) {
+    setSleepError("Sleep and wake times must differ.");
+    return;
+  }
+  if (enabled && days.length === 0) {
+    setSleepError("Choose at least one bedtime day.");
+    return;
+  }
+  if (enabled && modeValue !== "ban" && relevantSites.length === 0) {
+    setSleepError(`Add at least one ${modeValue === "whitelist" ? "allowed" : "blocked"} site.`);
+    return;
+  }
+
+  const button = $("#saveSleepSchedule");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Saving...";
+  }
+  setSleepError("");
+  try {
+    const response = await api("POST", "/api/sleep-schedule", {
+      enabled,
+      days_of_week: days,
+      sleep_time: sleepTime,
+      wake_time: wakeTime,
+      mode: modeValue,
+      blacklist: config.blacklist || [],
+      whitelist: config.whitelist || [],
+    });
+    if (response.status !== "ok") {
+      setSleepError(response.message || "Unable to save Sleep Schedule.");
+      return;
+    }
+    // Do not rely on SSE or the one-minute polling fallback to arm a changed
+    // sleep boundary after a successful save.
+    await chrome.runtime.sendMessage({ action: "sleepScheduleSaved" }).catch(() => {});
+    renderSleepSchedule(response, true);
+    if (response.queued) {
+      const status = $("#sleepStatus");
+      if (status) status.textContent = `Changes queued until ${formatSleepDate(response.apply_at)}.`;
+    }
+    await loadSleepSchedule(true);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Save Sleep Schedule";
+    }
+  }
+}
+
 // ── Render ────────────────────────────────────────────────────────────────────
 
 function renderStatus(data) {
@@ -283,6 +523,8 @@ function renderStatus(data) {
         ? "PRAYER"
         : data.session_type === "rescue"
         ? "RESCUE"
+        : data.session_type === "sleep"
+        ? "SLEEP"
         : data.mode.toUpperCase()
       : "Idle";
     badge.classList.toggle("active", active);
@@ -375,7 +617,7 @@ function renderStatus(data) {
 
       const infoType = $("#infoType");
       if (infoType) {
-        infoType.textContent = data.session_type === "prayer" ? "Prayer" : "Standard";
+        infoType.textContent = data.session_type === "prayer" ? "Prayer" : data.session_type === "sleep" ? "Sleep" : "Standard";
       }
 
       const pomoPhaseRow = $("#pomoPhaseRow");
@@ -389,6 +631,10 @@ function renderStatus(data) {
       if (timerRing) timerRing.classList.remove("break");
       const ring = $("#ringProgress");
       if (ring) ring.classList.remove("break");
+      if (data.session_type === "sleep") {
+        const timerLabel = $("#timerLabel");
+        if (timerLabel) timerLabel.textContent = `WAKE ${formatWakeTime(data.sleep_schedule?.wake_at || data.expires_at)}`;
+      }
     }
 
     // Session info
@@ -398,12 +644,14 @@ function renderStatus(data) {
         data.session_type === "prayer"
           ? "Prayer Ban 🕌"
           : data.session_type === "rescue"
-            ? "Rescue Throne 🛡️"
+            ? "Rescue Mode"
+            : data.session_type === "sleep"
+              ? `Sleep ${String(data.mode || "").toUpperCase()}`
             : data.mode;
     }
 
     const infoExpires = $("#infoExpires");
-    if (infoExpires) infoExpires.textContent = data.expires_at;
+    if (infoExpires) infoExpires.textContent = data.session_type === "sleep" ? formatWakeTime(data.sleep_schedule?.wake_at || data.expires_at) : data.expires_at;
 
     // Unlock info
     const unlockRow = $("#unlockRow");
@@ -438,6 +686,7 @@ function renderStatus(data) {
       btnStop.title = "";
     }
   }
+  renderSleepSummary(data.sleep_schedule || {});
 }
 
 // ── Intent Tasks ─────────────────────────────────────────────────────────────
@@ -907,29 +1156,57 @@ function initEvents() {
       }
     });
   }
+
+  const sleepMode = $("#sleepMode");
+  if (sleepMode) {
+    sleepMode.addEventListener("change", () => {
+      const config = pendingSleepSchedule || sleepSchedule;
+      if (!config) return;
+      config.mode = sleepMode.value;
+      sleepFormDirty = true;
+      renderSleepSites();
+    });
+  }
+  ["#sleepEnabled", "#sleepTime", "#wakeTime", "#sleepDays input"].forEach((selector) => {
+    $$(selector).forEach((input) => input.addEventListener("change", () => {
+      sleepFormDirty = true;
+    }));
+  });
+  const addSleepSiteButton = $("#addSleepSite");
+  if (addSleepSiteButton) addSleepSiteButton.addEventListener("click", addSleepSite);
+  const sleepSiteInput = $("#sleepSiteInput");
+  if (sleepSiteInput) {
+    sleepSiteInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        addSleepSite();
+      }
+    });
+  }
+  const saveSleepButton = $("#saveSleepSchedule");
+  if (saveSleepButton) saveSleepButton.addEventListener("click", saveSleepSchedule);
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 
 async function init() {
+  initializePressedControls();
   const offline = $("#offline");
   const main = $("#main");
 
-  const online = await checkServer();
-  if (!online) {
-    if (offline) offline.classList.remove("hidden");
-    if (main) main.classList.add("hidden");
+  const startupState = await checkStartupState();
+  if (!startupState.ok) {
+    showStartupState(startupState);
     return;
   }
 
   if (offline) offline.classList.add("hidden");
   if (main) main.classList.remove("hidden");
 
-  // A2: Load auth token before any mutations
-  await loadApiToken();
-
   // Fetch groups for idle selection
   await fetchGroups();
+
+  await loadSleepSchedule();
 
   initEvents();
 

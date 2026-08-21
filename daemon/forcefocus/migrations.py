@@ -72,6 +72,74 @@ def _validate_iso(value: Any, field: str) -> None:
         raise MigrationError(f"{field} must be an ISO timestamp") from exc
 
 
+def _sleep_schedule(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise MigrationError("sleep_schedule.json must be an object")
+    allowed = {
+        "enabled", "days_of_week", "sleep_time", "wake_time", "mode",
+        "blacklist", "whitelist", "suppressed_occurrences", "pending_config",
+        "pending_apply_at",
+    }
+    if set(data) - allowed:
+        raise MigrationError("sleep_schedule.json has unknown structure")
+    if not isinstance(data.get("enabled", False), bool):
+        raise MigrationError("sleep schedule enabled must be a boolean")
+    days = data.get("days_of_week", [])
+    if not isinstance(days, list) or any(isinstance(day, bool) or not isinstance(day, int) or day < 0 or day > 6 for day in days):
+        raise MigrationError("sleep schedule days must be integers 0-6")
+    for field in ("sleep_time", "wake_time"):
+        if not isinstance(data.get(field, ""), str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", data.get(field, "")):
+            raise MigrationError(f"sleep schedule {field} must be HH:MM")
+    mode = data.get("mode", "blacklist")
+    if mode not in ("blacklist", "whitelist", "ban"):
+        raise MigrationError("sleep schedule mode is invalid")
+    if data["sleep_time"] == data["wake_time"]:
+        raise MigrationError("sleep schedule times must differ")
+    if data.get("enabled", False) and not days:
+        raise MigrationError("enabled sleep schedule requires days")
+    suppressed = data.get("suppressed_occurrences", [])
+    if not isinstance(suppressed, list) or not all(isinstance(item, str) for item in suppressed):
+        raise MigrationError("sleep schedule suppressions must be strings")
+    blacklist = _domains(data.get("blacklist", []))
+    whitelist = _domains(data.get("whitelist", []))
+    if data.get("enabled", False) and mode in ("blacklist", "whitelist") and not (blacklist if mode == "blacklist" else whitelist):
+        raise MigrationError("enabled selected-site sleep schedule requires domains")
+    return {
+        "enabled": data.get("enabled", False),
+        "days_of_week": sorted(set(days)),
+        "sleep_time": data["sleep_time"],
+        "wake_time": data["wake_time"],
+        "mode": mode,
+        "blacklist": blacklist,
+        "whitelist": whitelist,
+        "suppressed_occurrences": suppressed,
+    }
+
+
+def migrate_v1_to_v2(root: Path) -> dict[Path, Any]:
+    """Add the independent Sleep Schedule document to manifest-backed v1 state."""
+    sleep_path = root / "sleep_schedule.json"
+    if not sleep_path.exists():
+        return {
+            sleep_path: {
+                "enabled": False,
+                "days_of_week": [],
+                "sleep_time": "22:00",
+                "wake_time": "07:00",
+                "mode": "blacklist",
+                "blacklist": [],
+                "whitelist": [],
+                "suppressed_occurrences": [],
+                "pending_config": None,
+                "pending_apply_at": None,
+            }
+        }
+    schedule = _sleep_schedule(_load(sleep_path))
+    schedule["pending_config"] = None
+    schedule["pending_apply_at"] = None
+    return {sleep_path: schedule}
+
+
 def migrate_v0_to_v1(root: Path) -> dict[Path, Any]:
     """Return validated migrated documents without writing them."""
     migrated: dict[Path, Any] = {}
@@ -149,5 +217,9 @@ def migrate_v0_to_v1(root: Path) -> dict[Path, Any]:
         if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
             raise MigrationError("session history must be a list of objects")
         migrated[history_path] = data
+
+    sleep_path = root / "sleep_schedule.json"
+    if sleep_path.exists():
+        migrated[sleep_path] = _sleep_schedule(_load(sleep_path))
 
     return migrated

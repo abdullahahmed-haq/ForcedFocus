@@ -268,6 +268,9 @@ class DNSMixin:
             """Whitelist mode: restore clean /etc/hosts, enforce PF firewall blocking all except whitelist."""
             with self.daemon.enforcement_lock:
                 try:
+                    if not self.daemon.original_dns:
+                        self.daemon.original_dns = self._get_current_dns_servers()
+                        self.daemon._persist_session_lock()
                     # 1. Start DNS & SNI proxies before breaking the network
                     if not getattr(self.daemon, "dns_proxy", None):
                         self.start_dns_proxy()
@@ -417,10 +420,6 @@ class DNSMixin:
                             )
                     except Exception as exc:
                         logging.error("Failed to restore DNS for %s: %s", svc, exc)
-                try:
-                    self.start_sni_proxy()
-                except Exception as exc:
-                    logging.error("Failed to start SNI proxy during whitelist enforcement: %s", exc)
                 logging.info("DNS servers restored for %d services.", success_count)
             except Exception as exc:
                 logging.error("Critical failure restoring DNS: %s", exc)

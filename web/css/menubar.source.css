@@ -1,3 +1,5 @@
+/* Source for generated menubar.css. */
+@import "./font-face.css";
 @import "tailwindcss";
 
 @layer theme {
@@ -31,7 +33,31 @@
     --color-success: oklch(65% 0.15 150);
     --color-warning: oklch(75% 0.15 75);
     
-    --font-sans: "Outfit", system-ui, -apple-system, sans-serif;
+    --font-sans: var(--ff-font);
+    --font-mono: var(--ff-font);
+    --text-xs: var(--ff-type-caption);
+    --text-xs--line-height: var(--ff-leading-normal);
+    --text-sm: var(--ff-type-label);
+    --text-sm--line-height: var(--ff-leading-normal);
+    --text-base: var(--ff-type-body);
+    --text-base--line-height: var(--ff-leading-normal);
+    --text-lg: 1rem;
+    --text-lg--line-height: var(--ff-leading-normal);
+    --text-xl: var(--ff-type-title);
+    --text-xl--line-height: var(--ff-leading-tight);
+    --text-2xl: var(--ff-type-heading);
+    --text-2xl--line-height: var(--ff-leading-tight);
+    --text-3xl: 1.75rem;
+    --text-3xl--line-height: var(--ff-leading-tight);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -49,6 +75,12 @@
     color: var(--color-text-primary);
   }
 
+  body {
+    font-size: var(--ff-type-body);
+    line-height: var(--ff-leading-normal);
+    font-synthesis: none;
+  }
+
   /* Hide webkit spinner arrows for the number inputs */
   input[type="number"]::-webkit-inner-spin-button,
   input[type="number"]::-webkit-outer-spin-button {
@@ -59,15 +91,27 @@
     -moz-appearance: textfield;
     appearance: textfield;
   }
+
+  :where(button, input, select, textarea) {
+    font-family: var(--ff-font);
+  }
+
+  :where(button, input, select, textarea, a, summary):focus-visible {
+    outline: 2px solid var(--color-accent-blue);
+    outline-offset: 2px;
+  }
+
+  :where(input, textarea)::placeholder {
+    color: var(--color-text-secondary);
+    opacity: 1;
+  }
 }
 
 /* Retain the complex custom animations and effects */
 @layer utilities {
 
   /* Complex animations that are hard to do with arbitrary utilities */
-  .logo-icon-pulse {
-    animation: logoPulse 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-  }
+  .logo-icon-pulse { }
   
   @keyframes logoPulse {
     0%, 100% {
@@ -94,7 +138,7 @@
     border-radius: 50%;
     background: inherit;
     opacity: 0.4;
-    animation: ripple 2s infinite;
+    animation: none;
   }
 
   @keyframes ripple {

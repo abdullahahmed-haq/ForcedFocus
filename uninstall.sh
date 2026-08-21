@@ -17,6 +17,7 @@ NC='\033[0m'
 DAEMON_DST="/usr/local/bin/forcefocus_daemon.py"
 SNI_PROXY_DST="/usr/local/bin/sni_proxy.py"
 CLI_DST="/usr/local/bin/forcefocus"
+APP_DST="/Applications/ForcedFocusBar.app"
 PLIST_DST="/Library/LaunchDaemons/com.forcefocus.daemon.plist"
 CONFIG_DIR="/etc/forcefocus"
 WEB_DIR_DST="/usr/local/share/forcefocus"
@@ -38,6 +39,26 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# Resolve the installed Python before any destructive operation. The previous
+# script only initialized this variable when a key file existed, so installs
+# without a key could stop the daemon and then abort while restoring hosts.
+PYTHON_BIN=""
+for candidate in \
+    /usr/local/lib/forcefocus/runtime/bin/python3 \
+    /opt/homebrew/bin/python3.13 \
+    /usr/local/bin/python3.13 \
+    /usr/local/bin/python3 \
+    /usr/bin/python3; do
+    if [[ -x "$candidate" ]] && "$candidate" --version &>/dev/null; then
+        PYTHON_BIN="$candidate"
+        break
+    fi
+done
+if [[ -z "$PYTHON_BIN" ]]; then
+    echo -e "${RED}  ✗ Python 3 not found. Cannot safely restore system state.${NC}"
+    exit 1
+fi
+
 # ── Passphrase Verification ──────────────────────────────────────────────────
 # Require the kill-switch passphrase to uninstall (prevents impulsive removal)
 KS_HASH_FILE="${CONFIG_DIR}/ks_hash"
@@ -46,20 +67,6 @@ if [[ -f "$KS_HASH_FILE" ]]; then
     echo ""
     read -s -p "  Passphrase: " PASSPHRASE
     echo ""
-
-    # Verify using Python (same PBKDF2 logic as daemon)
-    # Detect Python 3 binary
-    PYTHON_BIN=""
-    for candidate in /usr/local/bin/python3 /usr/bin/python3; do
-        if "$candidate" --version &>/dev/null 2>&1; then
-            PYTHON_BIN="$candidate"
-            break
-        fi
-    done
-    if [[ -z "$PYTHON_BIN" ]]; then
-        echo -e "${RED}  ✗ Python 3 not found. Cannot verify passphrase.${NC}"
-        exit 1
-    fi
 
     VERIFY_RESULT=$(printf '%s' "$PASSPHRASE" | $PYTHON_BIN -c "
 import json, hashlib, hmac, sys
@@ -158,14 +165,57 @@ killall -HUP mDNSResponder 2>/dev/null || true
 echo -e "${GREEN}  ✓ DNS cache flushed.${NC}"
 
 # ── Restore DNS servers (critical for whitelist mode) ─────────────────────────
-echo -e "${CYAN}  Restoring DNS servers to DHCP defaults...${NC}"
-networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | while IFS= read -r svc; do
-    svc_trimmed=$(echo "$svc" | sed 's/^[* ]*//')
-    if [[ -n "$svc_trimmed" ]]; then
-        networksetup -setdnsservers "$svc_trimmed" empty 2>/dev/null || true
-    fi
-done
-echo -e "${GREEN}  ✓ DNS servers restored.${NC}"
+echo -e "${CYAN}  Restoring DNS servers...${NC}"
+"$PYTHON_BIN" - "$CONFIG_DIR/session.lock" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+session_path = Path(sys.argv[1])
+original = {}
+try:
+    value = json.loads(session_path.read_text(encoding="utf-8"))
+    if isinstance(value, dict) and isinstance(value.get("original_dns"), dict):
+        original = value["original_dns"]
+except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    pass
+
+if original:
+    for service, raw_servers in original.items():
+        if not isinstance(service, str) or not isinstance(raw_servers, str):
+            continue
+        servers = [
+            item
+            for item in raw_servers.splitlines()
+            if item and item not in {"127.0.0.1", "::1", "localhost"}
+        ]
+        if not servers or "There aren't any DNS Servers" in raw_servers:
+            servers = ["empty"]
+        subprocess.run(
+            ["networksetup", "-setdnsservers", service, *servers],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+else:
+    listing = subprocess.run(
+        ["networksetup", "-listallnetworkservices"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    for line in listing.stdout.splitlines()[1:]:
+        service = line.strip().lstrip("*").strip()
+        if service:
+            subprocess.run(
+                ["networksetup", "-setdnsservers", service, "empty"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+PY
+echo -e "${GREEN}  ✓ DNS servers restored from saved state when available.${NC}"
 
 # ── Remove system files ───────────────────────────────────────────────────────
 echo -e "${CYAN}  Removing installed files...${NC}"
@@ -225,8 +275,25 @@ fi
 
 # ── Kill any remaining processes ─────────────────────────────────────────────
 echo -e "${CYAN}  Killing any remaining processes...${NC}"
-pkill -9 -f "forcefocus" 2>/dev/null || true
-echo -e "${GREEN}  ✓ Processes terminated.${NC}"
+PROCESS_PATTERNS=(
+    "/usr/local/lib/forcefocus/daemon/forcefocus_daemon.py"
+    "/usr/local/bin/forcefocus_daemon.py"
+    "/usr/local/bin/sni_proxy.py"
+    "$APP_DST/Contents/MacOS/ForcedFocusBar"
+)
+for pattern in "${PROCESS_PATTERNS[@]}"; do
+    pkill -TERM -f "$pattern" 2>/dev/null || true
+done
+sleep 1
+for pattern in "${PROCESS_PATTERNS[@]}"; do
+    pkill -KILL -f "$pattern" 2>/dev/null || true
+done
+echo -e "${GREEN}  ✓ ForcedFocus processes stopped.${NC}"
+
+if [[ -d "$APP_DST" ]]; then
+    rm -rf "$APP_DST"
+    echo -e "    Removed: ${APP_DST}"
+fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""

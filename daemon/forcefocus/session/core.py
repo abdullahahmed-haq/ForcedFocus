@@ -36,8 +36,15 @@ class CoreMixin:
     def _start_session(self, cmd: dict) -> dict:
             duration_minutes = cmd.get("duration_minutes", 120)
             mode = cmd.get("mode", "blacklist")
+            session_type = cmd.get("session_type", "standard")
+            is_sleep = (
+                cmd.get("_sleep") is True
+                and cmd.get("_sleep_authority") is self.daemon.sleep_schedule_manager
+            )
             # D3: Validate inputs before acquiring lock
             try:
+                if isinstance(duration_minutes, bool):
+                    raise ValueError
                 duration_minutes = int(duration_minutes)
             except (TypeError, ValueError):
                 return {"status": "error", "message": "Invalid duration."}
@@ -45,6 +52,47 @@ class CoreMixin:
                 return {"status": "error", "message": "Duration must be 1–1440 minutes."}
             if mode not in ("blacklist", "whitelist", "ban"):
                 return {"status": "error", "message": "Invalid mode."}
+            if session_type not in ("standard", "pomodoro", "rescue") and not (
+                is_sleep and session_type == "sleep"
+            ):
+                return {"status": "error", "message": "Invalid session type."}
+            groups = cmd.get("groups", [])
+            if not isinstance(groups, list) or not all(isinstance(g, str) for g in groups):
+                return {"status": "error", "message": "Groups must be a list of names."}
+            intent_tasks = cmd.get("intent_tasks", [])
+            if not isinstance(intent_tasks, list):
+                return {"status": "error", "message": "Intent tasks must be a list."}
+            cmd = dict(cmd)
+            cmd["duration_minutes"] = duration_minutes
+            cmd["session_type"] = session_type
+            cmd["groups"] = groups
+            cmd["intent_tasks"] = intent_tasks
+            if session_type == "pomodoro":
+                normalized_pomodoro = {}
+                for key, default in (
+                    ("focus_minutes", 25),
+                    ("break_minutes", 5),
+                    ("cycles", 4),
+                ):
+                    value = cmd.get(key, default)
+                    try:
+                        if isinstance(value, bool):
+                            raise ValueError
+                        normalized_pomodoro[key] = int(value)
+                    except (TypeError, ValueError):
+                        return {"status": "error", "message": f"Invalid {key.replace('_', ' ')}."}
+                focus_minutes = normalized_pomodoro["focus_minutes"]
+                break_minutes = normalized_pomodoro["break_minutes"]
+                cycles = normalized_pomodoro["cycles"]
+                if not 1 <= focus_minutes <= 240:
+                    return {"status": "error", "message": "Focus minutes must be 1–240."}
+                if not 1 <= break_minutes <= 60:
+                    return {"status": "error", "message": "Break minutes must be 1–60."}
+                if not 1 <= cycles <= 50:
+                    return {"status": "error", "message": "Cycles must be 1–50."}
+                if (focus_minutes + break_minutes) * cycles > 1440:
+                    return {"status": "error", "message": "Pomodoro duration must be 1440 minutes or less."}
+                cmd.update(normalized_pomodoro)
             with self.daemon.lock:
                 # Parse scheduling arguments
                 schedule_in = cmd.get("schedule_in_minutes")
@@ -100,13 +148,32 @@ class CoreMixin:
     
                 # Check overlap if active
                 if self.daemon.state.session.active:
+                    if self.daemon.state.session.session_type == "sleep" and not is_scheduling:
+                        return {"status": "error", "message": "Session conflicts with the active Sleep Schedule."}
                     if not is_scheduling:
+                        merge_snapshot = {
+                            "session_expiry": self.daemon.state.session.session_expiry,
+                            "total_duration_seconds": self.daemon.state.session.total_duration_seconds,
+                            "session_groups": list(self.daemon.state.session.session_groups),
+                            "session_base_domains": list(self.daemon.session_base_domains),
+                            "active_domains": list(self.daemon.state.active_domains),
+                            "active_domains_set": set(self.daemon.active_domains_set),
+                            "mono_session_end": self.daemon._mono_session_end,
+                        }
+                        immediate_end = datetime.now() + timedelta(minutes=duration_minutes)
+                        if not is_sleep and self.daemon.sleep_schedule_manager.conflicts_interval(
+                            datetime.now(), immediate_end
+                        ):
+                            return {
+                                "status": "error",
+                                "message": "Session overlaps with Sleep Schedule.",
+                            }
                         if cmd.get("scheduled_execution"):
                             return {
                                 "status": "error",
                                 "message": "Scheduled session conflicts with the currently active session.",
                             }
-                        if self.daemon.state.session.session_type != cmd.get("session_type", "standard"):
+                        if self.daemon.state.session.session_type != session_type:
                             return {"status": "error", "message": "Cannot merge different session types (e.g. standard and pomodoro)."}
                         if self.daemon.state.session.mode != mode:
                             return {"status": "error", "message": "Cannot merge different modes (whitelist/blacklist)."}
@@ -137,11 +204,23 @@ class CoreMixin:
                                 self.daemon.state.active_domains.extend(new_expanded)
                                 self.daemon.state.active_domains = list(set(self.daemon.state.active_domains))
                                 self.daemon.active_domains_set = set(self.daemon.state.active_domains)
-                                self.daemon.events.emit(Event.SESSION_STARTED)
                             # For whitelist, adding domains makes it less restrictive. 
                             # We skip expanding the whitelist during a merge to enforce strictness.
     
-                        self.daemon._persist_session_lock()
+                        if not self.daemon._persist_session_lock():
+                            self.daemon.state.session.session_expiry = merge_snapshot["session_expiry"]
+                            self.daemon.state.session.total_duration_seconds = merge_snapshot["total_duration_seconds"]
+                            self.daemon.state.session.session_groups = merge_snapshot["session_groups"]
+                            self.daemon.session_base_domains = merge_snapshot["session_base_domains"]
+                            self.daemon.state.active_domains = merge_snapshot["active_domains"]
+                            self.daemon.active_domains_set = merge_snapshot["active_domains_set"]
+                            self.daemon._mono_session_end = merge_snapshot["mono_session_end"]
+                            return {
+                                "status": "error",
+                                "message": "Failed to persist the merged session.",
+                            }
+                        if selected_groups and self.daemon.state.session.mode == "blacklist":
+                            self.daemon.events.emit(Event.SESSION_STARTED)
                         self.daemon.notifications_manager.broadcast_state_changed()
                         
                         msg = f"Session merged. Extended by {added_minutes} minutes." if added_minutes > 0 else "Session merged. Constraints updated."
@@ -161,6 +240,12 @@ class CoreMixin:
     
                 if is_scheduling:
                     end_time = start_time + timedelta(minutes=duration_minutes)
+
+                    if self.daemon.sleep_schedule_manager.conflicts_interval(start_time, end_time):
+                        return {
+                            "status": "error",
+                            "message": "Schedule overlaps with Sleep Schedule.",
+                        }
 
                     if (
                         self.daemon.state.session.active
@@ -194,16 +279,20 @@ class CoreMixin:
                     sch_cmd.pop("schedule_at_time", None)
     
                     mono_start = get_continuous_time() + (start_time - datetime.now()).total_seconds()
-                    self.daemon.schedules.append(
-                        {
-                            "start_time": start_time,
-                            "end_time": end_time,
-                            "mono_start": mono_start,
-                            "cmd": sch_cmd,
-                        }
-                    )
+                    scheduled_entry = {
+                        "start_time": start_time,
+                        "end_time": end_time,
+                        "mono_start": mono_start,
+                        "cmd": sch_cmd,
+                    }
+                    self.daemon.schedules.append(scheduled_entry)
                     self.daemon.schedules.sort(key=lambda x: x["start_time"])
-                    self.daemon._persist_session_lock()
+                    if not self.daemon._persist_session_lock():
+                        self.daemon.schedules.remove(scheduled_entry)
+                        return {
+                            "status": "error",
+                            "message": "Failed to persist the scheduled session.",
+                        }
     
                     logging.info(
                         "Session scheduled to start at %s.",
@@ -215,24 +304,46 @@ class CoreMixin:
                         "scheduled": True,
                         "starts_at": start_time.strftime("%Y-%m-%d %I:%M %p"),
                     }
-    
+
+                if not is_sleep:
+                    immediate_end = datetime.now() + timedelta(minutes=duration_minutes)
+                    if self.daemon.sleep_schedule_manager.conflicts_interval(
+                        datetime.now(), immediate_end
+                    ):
+                        return {
+                            "status": "error",
+                            "message": "Session overlaps with Sleep Schedule.",
+                        }
+
                 self.daemon.state.session.mode = mode
-                self.daemon.state.session.session_type = cmd.get("session_type", "standard")
+                self.daemon.state.session.session_type = session_type
                 self.daemon.state.session.intent = (
                     cmd.get("intent", None) or self.daemon.state.session.intent
                 )  # Keep existing intent if set via /api/intent and not provided in start
                 self.daemon.state.session.intent_tasks = (
                     cmd.get("intent_tasks", None) or self.daemon.state.session.intent_tasks
                 )
-                self.daemon.state.session.session_expiry = datetime.now() + timedelta(minutes=duration_minutes)
+                sleep_wake = cmd.get("_sleep_wake") if is_sleep else None
+                if is_sleep and not isinstance(sleep_wake, datetime):
+                    return {"status": "error", "message": "Invalid Sleep Schedule wake time."}
+                self.daemon.state.session.session_expiry = sleep_wake or (
+                    datetime.now() + timedelta(minutes=duration_minutes)
+                )
+                self.daemon.state.session.sleep_occurrence = (
+                    cmd.get("_sleep_occurrence") if is_sleep else None
+                )
                 if not self.daemon.state.session.active:
                     self.daemon.state.session.session_group_id = str(uuid.uuid4())
                 self.daemon.state.session.active = True
-                self.daemon.state.session.total_duration_seconds = duration_minutes * 60
+                self.daemon.state.session.total_duration_seconds = int(
+                    (self.daemon.state.session.session_expiry - datetime.now()).total_seconds()
+                ) if is_sleep else duration_minutes * 60
                 self.daemon.state.session.pending_unlock_at = None
                 # Monotonic anchors
                 now_mono = get_continuous_time()
-                self.daemon._mono_session_end = now_mono + (duration_minutes * 60)
+                self.daemon._mono_session_end = now_mono + max(
+                    0, (self.daemon.state.session.session_expiry - datetime.now()).total_seconds()
+                ) if is_sleep else now_mono + (duration_minutes * 60)
                 self.daemon._mono_unlock_end = 0.0
                 self.daemon._mono_last_intent_notif = now_mono
     
@@ -264,6 +375,7 @@ class CoreMixin:
                     "mode": mode,
                     "duration_minutes": duration_minutes,
                     "session_type": self.daemon.state.session.session_type,
+                    "sleep_occurrence": self.daemon.state.session.sleep_occurrence,
                     "pomo_focus_minutes": self.daemon.state.pomodoro.pomo_focus_minutes,
                     "pomo_break_minutes": self.daemon.state.pomodoro.pomo_break_minutes,
                     "pomo_total_cycles": self.daemon.state.pomodoro.pomo_total_cycles,
@@ -296,7 +408,9 @@ class CoreMixin:
                 self.daemon.state.session.session_groups = list(selected_groups)
                 if mode in ("whitelist", "ban"):
                     # Original DNS is saved by the enforcement manager itself on SESSION_STARTED
-                    if self.daemon.state.session.session_type == "rescue" or mode == "ban":
+                    if is_sleep:
+                        wl_domains = list(cmd.get("_sleep_base_domains", []))
+                    elif self.daemon.state.session.session_type == "rescue" or mode == "ban":
                         wl_domains = []
                     else:
                         wl_domains = self.daemon.domains_manager.load_lists().get("whitelist", [])
@@ -310,7 +424,9 @@ class CoreMixin:
                     )
     
                     # Whitelist mode: active_domains holds the ALLOW-list.
-                    if self.daemon.state.session.session_type == "rescue" or mode == "ban":
+                    if is_sleep:
+                        wl_domains_expanded = list(cmd.get("_sleep_active_domains", []))
+                    elif self.daemon.state.session.session_type == "rescue" or mode == "ban":
                         wl_domains_expanded = []
                     else:
                         wl_domains_expanded = self.daemon.domains_manager.expand_whitelist_domains(wl_domains)
@@ -325,9 +441,15 @@ class CoreMixin:
                     session_data["original_dns"] = self.daemon.original_dns
                     session_data["whitelist_count"] = count
                     session_data["whitelist_expanded_count"] = expanded_count
-                    self.daemon._atomic_write_json(SESSION_LOCK, session_data)
+                    try:
+                        self.daemon._atomic_write_json(SESSION_LOCK, session_data)
+                    except Exception:
+                        self._rollback_failed_session_start()
+                        raise
                     self.daemon.events.emit(Event.SESSION_STARTED)
-                    if self.daemon.state.session.session_type == "pomodoro":
+                    if is_sleep:
+                        msg = f"Sleep Schedule active until {self.daemon.state.session.session_expiry.strftime('%H:%M')}."
+                    elif self.daemon.state.session.session_type == "pomodoro":
                         msg = f"Pomodoro (Whitelist): {count} domains allowed ({expanded_count} total with CDNs) for {self.daemon.state.pomodoro.pomo_total_cycles} cycles."
                     elif self.daemon.state.session.session_type == "rescue":
                         msg = f"Rescue Throne activated: All sites blocked for {duration_minutes} min."
@@ -340,7 +462,7 @@ class CoreMixin:
                         msg = f"Whitelist mode: {count} domains allowed ({expanded_count} total with CDNs) for {duration_minutes} min."
                 else:
                     # Build base domain list (for Chrome extension — no subdomain expansion)
-                    base_bl = list(
+                    base_bl = list(cmd.get("_sleep_base_domains", [])) if is_sleep else list(
                         self.daemon.domains_manager.load_lists().get("blacklist", [])
                     )
                     if selected_groups:
@@ -352,14 +474,20 @@ class CoreMixin:
                         set(d.strip().lower() for d in base_bl if d.strip() and "." in d)
                     )
                     # Build expanded domain list (for /etc/hosts — needs explicit subdomain entries)
-                    self.daemon.state.active_domains = self.daemon.domains_manager.get_blacklist_domains(selected_groups)
+                    self.daemon.state.active_domains = list(cmd.get("_sleep_active_domains", [])) if is_sleep else self.daemon.domains_manager.get_blacklist_domains(selected_groups)
                     self.daemon.active_domains_set = set(self.daemon.state.active_domains)
                     session_data["active_domains"] = self.daemon.state.active_domains
                     session_data["session_base_domains"] = self.daemon.session_base_domains
-                    self.daemon._atomic_write_json(SESSION_LOCK, session_data)
+                    try:
+                        self.daemon._atomic_write_json(SESSION_LOCK, session_data)
+                    except Exception:
+                        self._rollback_failed_session_start()
+                        raise
                     self.daemon.events.emit(Event.SESSION_STARTED)
                     count = len(self.daemon.state.active_domains)
-                    if self.daemon.state.session.session_type == "pomodoro":
+                    if is_sleep:
+                        msg = f"Sleep Schedule active until {self.daemon.state.session.session_expiry.strftime('%H:%M')}."
+                    elif self.daemon.state.session.session_type == "pomodoro":
                         msg = f"Pomodoro (Blacklist): {count} domains blocked for {self.daemon.state.pomodoro.pomo_total_cycles} cycles."
                     else:
                         msg = f"Blacklist mode: {count} domains blocked for {duration_minutes} min."
@@ -367,7 +495,11 @@ class CoreMixin:
                 # Prayer has higher priority than every regular session mode. A
                 # session that starts while Prayer is active is immediately
                 # suspended, so its timer begins only when Prayer ends.
-                if getattr(self.daemon, "prayer_ban_active", ""):
+                if is_sleep and getattr(self.daemon, "prayer_ban_active", ""):
+                    # Sleep's fixed deadline continues, but Prayer remains the
+                    # active enforcement overlay until its own window ends.
+                    self.daemon.watchdog_manager._enforce_prayer_ban()
+                elif getattr(self.daemon, "prayer_ban_active", ""):
                     self.daemon.watchdog_manager._suspend_session_for_prayer(
                         now_mono, datetime.now()
                     )
@@ -378,7 +510,9 @@ class CoreMixin:
                     self.daemon.state.session.session_expiry.strftime("%H:%M:%S"),
                 )
                 # Centralized sound + notification for ALL session starts
-                if self.daemon.state.session.session_type == "rescue":
+                if is_sleep:
+                    self.daemon.notifications_manager.play_sound("scheduled")
+                elif self.daemon.state.session.session_type == "rescue":
                     self.daemon.notifications_manager.play_sound("rescue")
                     self.daemon.notifications_manager.send_mac_notification(
                         "Rescue Mode",
@@ -408,7 +542,7 @@ class CoreMixin:
                 now_mono = time.monotonic()
                 if self.daemon._passphrase_attempts >= 5:
                     cooldown = min(60, 2 ** (self.daemon._passphrase_attempts - 5))
-                    elapsed = now_mono - self._last_attempt_time
+                    elapsed = now_mono - self.daemon._last_attempt_time
                     if elapsed < cooldown:
                         wait = int(cooldown - elapsed)
                         logging.warning("Passphrase rate-limited. %ds remaining.", wait)
@@ -416,7 +550,7 @@ class CoreMixin:
                             "status": "error",
                             "message": f"Too many attempts. Wait {wait}s.",
                         }
-                self._last_attempt_time = now_mono
+                self.daemon._last_attempt_time = now_mono
                 if not self.daemon._verify_passphrase(passphrase):
                     self.daemon._passphrase_attempts += 1
                     logging.warning(
@@ -434,11 +568,19 @@ class CoreMixin:
                             "status": "pending",
                             "message": f"Unlock already pending. {int(rem_mono/60)}m {int(rem_mono%60)}s remaining.",
                         }
+                previous_unlock_at = self.daemon.state.session.pending_unlock_at
+                previous_mono_unlock_end = self.daemon._mono_unlock_end
                 self.daemon.state.session.pending_unlock_at = datetime.now() + timedelta(
                     seconds=DELAYED_UNLOCK_S
                 )
                 self.daemon._mono_unlock_end = get_continuous_time() + DELAYED_UNLOCK_S
-                self.daemon._persist_session_lock()
+                if not self.daemon._persist_session_lock():
+                    self.daemon.state.session.pending_unlock_at = previous_unlock_at
+                    self.daemon._mono_unlock_end = previous_mono_unlock_end
+                    return {
+                        "status": "error",
+                        "message": "Failed to persist the unlock request.",
+                    }
                 self.daemon.notifications_manager.play_sound("unlock")
                 self.daemon.notifications_manager.broadcast_state_changed()
                 unlock_str = self.daemon.state.session.pending_unlock_at.strftime("%H:%M:%S")
@@ -454,9 +596,17 @@ class CoreMixin:
                     return {"status": "error", "message": "No active session."}
                 if not self.daemon.state.session.pending_unlock_at:
                     return {"status": "error", "message": "No unlock pending."}
+                previous_unlock_at = self.daemon.state.session.pending_unlock_at
+                previous_mono_unlock_end = self.daemon._mono_unlock_end
                 self.daemon.state.session.pending_unlock_at = None
                 self.daemon._mono_unlock_end = 0.0
-                self.daemon._persist_session_lock()
+                if not self.daemon._persist_session_lock():
+                    self.daemon.state.session.pending_unlock_at = previous_unlock_at
+                    self.daemon._mono_unlock_end = previous_mono_unlock_end
+                    return {
+                        "status": "error",
+                        "message": "Failed to persist the cancellation.",
+                    }
                 self.daemon.notifications_manager.broadcast_state_changed()
                 logging.info("Pending unlock cancelled. Focus session continues.")
                 return {"status": "ok", "message": "Unlock request cancelled. Continuing focus."}
@@ -471,6 +621,19 @@ class CoreMixin:
             except Exception as exc:
                 logging.error("_remove_block error: %s", exc)
 
+    def _rollback_failed_session_start(self) -> None:
+            """Restore the idle in-memory state when the commitment was not durable."""
+            self.daemon.state.session.reset()
+            self.daemon.state.pomodoro.reset()
+            self.daemon.state.active_domains = []
+            self.daemon.active_domains_set = set()
+            self.daemon.session_base_domains = []
+            self.daemon.whitelist_count = 0
+            self.daemon.whitelist_expanded_count = 0
+            self.daemon._mono_session_end = 0.0
+            self.daemon._mono_unlock_end = 0.0
+            self.daemon._mono_pomo_phase_end = 0.0
+
     def _cleanup_session(self):
             """Teardown active session completely."""
             with self.daemon.enforcement_lock:
@@ -481,6 +644,17 @@ class CoreMixin:
                 )
                 self.daemon.state.session.active = False  # Ensure firewall logic knows session is ending
                 was_whitelist = self.daemon.state.session.mode in ("whitelist", "ban")
+                was_sleep = self.daemon.state.session.session_type == "sleep"
+                sleep_occurrence = self.daemon.state.session.sleep_occurrence
+                now_wall = datetime.now()
+                now_mono = get_continuous_time()
+                sleep_ended_early = (
+                    was_sleep
+                    and self.daemon.state.session.pending_unlock_at is not None
+                    and self.daemon.state.session.session_expiry is not None
+                    and now_wall < self.daemon.state.session.session_expiry
+                    and now_mono < self.daemon._mono_session_end
+                )
     
                 try:
                     subprocess.run(
@@ -492,12 +666,20 @@ class CoreMixin:
     
                 # Record session history BEFORE resetting state
                 try:
-                    self.daemon.history_manager.record_session_history()
+                    if not was_sleep:
+                        self.daemon.history_manager.record_session_history()
                 except Exception as exc:
                     logging.error("Failed to record session history: %s", exc)
-    
-    
-                if getattr(self, "schedules", []) or self.daemon.recurring_schedules:
+
+                # Suppress before deleting the session lock so a restart cannot
+                # restart the occurrence after an approved early stop.
+                if sleep_ended_early:
+                    self.daemon.sleep_schedule_manager.suppress_current_occurrence(sleep_occurrence)
+                elif was_sleep:
+                    self.daemon.sleep_schedule_manager.promote_pending_if_due(now_wall)
+
+
+                if self.daemon.schedules or self.daemon.recurring_schedules:
                     self.daemon._persist_session_lock()
                 else:
                     SESSION_LOCK.unlink(missing_ok=True)
@@ -528,6 +710,7 @@ class CoreMixin:
                 self.daemon.state.pomodoro.pomo_phase_expiry = None
                 self.daemon.state.pomodoro.pomo_phases_tracked_seconds = 0
                 self.daemon.state.session.session_group_id = None
+                self.daemon.state.session.sleep_occurrence = None
                 self.daemon._mono_session_end = 0.0
                 self.daemon._mono_unlock_end = 0.0
                 self.daemon._mono_pomo_phase_end = 0.0
@@ -597,6 +780,7 @@ class CoreMixin:
                         "state_revision": self.daemon.state_revision,
                         "notification_warning": self.daemon.notification_warning,
                         "next_prayer_seconds": next_prayer_seconds,
+                        "sleep_schedule": self.daemon.sleep_schedule_manager.status_summary(),
                     })
                 if not self.daemon.state.session.active:
                     return self._normalize_status({
@@ -610,6 +794,7 @@ class CoreMixin:
                         "state_revision": self.daemon.state_revision,
                         "notification_warning": self.daemon.notification_warning,
                         "next_prayer_seconds": next_prayer_seconds,
+                        "sleep_schedule": self.daemon.sleep_schedule_manager.status_summary(),
                     })
                 # C3: Use monotonic time for all remaining-seconds fields
                 now_mono = get_continuous_time()
@@ -636,6 +821,7 @@ class CoreMixin:
                         "state_revision": self.daemon.state_revision,
                         "notification_warning": self.daemon.notification_warning,
                         "next_prayer_seconds": next_prayer_seconds,
+                        "sleep_schedule": self.daemon.sleep_schedule_manager.status_summary(),
                     })
                 result = {
                     "status": "ok",
@@ -671,6 +857,7 @@ class CoreMixin:
                     "state_revision": self.daemon.state_revision,
                     "notification_warning": self.daemon.notification_warning,
                     "next_prayer_seconds": next_prayer_seconds,
+                    "sleep_schedule": self.daemon.sleep_schedule_manager.status_summary(),
                 }
                 if self.daemon.state.session.session_type == "pomodoro":
                     result["pomo_phase"] = self.daemon.state.pomodoro.pomo_phase

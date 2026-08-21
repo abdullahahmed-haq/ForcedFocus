@@ -1,9 +1,9 @@
 PYTHON ?= python3.13
 NPM ?= npm
 
-.PHONY: check check-python check-js check-shared test lint typecheck build build-web build-menubar package release audit-stage1
+.PHONY: check check-python check-js check-shared check-versions check-packaging test lint typecheck build build-web build-menubar package release audit-stage1
 
-check: check-shared check-python check-js
+check: check-shared check-versions check-packaging check-python check-js
 
 check-python: lint typecheck test
 
@@ -17,17 +17,27 @@ test:
 	$(PYTHON) -m pytest --cov --cov-report=term-missing
 
 check-js:
+	$(NPM) --prefix web run lint
+	$(NPM) --prefix web run test:ui
 	node --input-type=module --check < web/js/app.js
 	node --input-type=module --check < web/js/settings.js
 	node --input-type=module --check < web/js/menubar.js
 	node --input-type=module --check < shared/api.js
 	node --input-type=module --check < shared/utils.js
+	node --input-type=module --check < shared/intent-tasks.js
 	node --check chrome-extension/background.js
 	node --check chrome-extension/popup.js
 	node --check chrome-extension/blocked.js
 
 check-shared:
 	bash scripts/sync_shared.sh --check
+
+check-versions:
+	$(PYTHON) scripts/check_versions.py
+
+check-packaging:
+	bash -n install.sh uninstall.sh menubar/build_menubar.sh scripts/sync_shared.sh scripts/install-local.command
+	plutil -lint packaging/macos/launchd/com.forcefocus.daemon.plist
 
 build: build-web build-menubar
 

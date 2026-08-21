@@ -1,6 +1,7 @@
 import pytest
 import json
 import forcefocus_daemon
+from unittest.mock import MagicMock
 
 def test_expand_youtube_in_blacklist(mock_daemon):
     mock_daemon.domains_manager.save_lists({"blacklist": ["youtube.com"], "whitelist": []})
@@ -53,3 +54,40 @@ def test_empty_blacklist_produces_no_blocked_domains(mock_daemon):
     domains = mock_daemon.domains_manager.get_blacklist_domains([])
 
     assert domains == []
+
+
+def test_list_cache_reflects_sequential_mutations(mock_daemon):
+    mock_daemon.domains_manager.save_lists({"blacklist": ["first.example"], "whitelist": []})
+    assert mock_daemon.domains_manager.load_lists()["blacklist"] == ["first.example"]
+
+    mock_daemon.domains_manager.cmd_add_domain(
+        {"list": "blacklist", "domain": "second.example"}
+    )
+    mock_daemon.domains_manager.cmd_add_domain(
+        {"list": "blacklist", "domain": "third.example"}
+    )
+    mock_daemon.domains_manager.cmd_remove_domain(
+        {"list": "blacklist", "domain": "second.example"}
+    )
+
+    assert mock_daemon.domains_manager.load_lists()["blacklist"] == [
+        "first.example",
+        "third.example",
+    ]
+
+
+def test_empty_whitelist_has_no_implicit_infrastructure_allowances(mock_daemon):
+    assert mock_daemon.domains_manager.expand_whitelist_domains([]) == []
+
+
+def test_permanent_block_add_rolls_back_when_persistence_fails(mock_daemon):
+    mock_daemon._atomic_write_json = MagicMock(side_effect=OSError("disk full"))
+    mock_daemon.events.emit = MagicMock()
+
+    response = mock_daemon.domains_manager.cmd_add_perma_block(
+        {"domain": "example.com"}
+    )
+
+    assert response["status"] == "error"
+    assert mock_daemon.perma_blocklist == []
+    mock_daemon.events.emit.assert_not_called()

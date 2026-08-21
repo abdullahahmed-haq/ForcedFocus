@@ -14,6 +14,8 @@ venv/
 # JavaScript
 node_modules/
 npm-debug.log*
+web/test-results/
+web/playwright-report/
 
 # macOS and editors
 .DS_Store

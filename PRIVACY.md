@@ -1,12 +1,23 @@
 # Privacy
 
-ForcedFocus is local-only in version 1.0.0. It has no telemetry, advertising,
-analytics SDK, account system, or cloud synchronization.
+ForcedFocus has no telemetry, advertising, analytics SDK, account system, cloud
+synchronization, or remote control plane.
 
 Sensitive local data can include blocked/allowed domains, session intents and
 tasks, prayer coordinates, schedule names, usernames, security-key hash/salt,
-and the local API token. These values remain on the Mac and are excluded or
-redacted from diagnostic bundles.
+and the local API token. These values are excluded or redacted from diagnostic
+bundles.
+
+Prayer scheduling is the only optional external data request in version 1.0.0.
+When Prayer blocking is enabled, coordinates are configured, and a monthly
+calendar is not already cached, ForcedFocus sends the configured latitude,
+longitude, and calculation-method number over HTTPS to the AlAdhan calendar
+API. The returned prayer times are cached locally. ForcedFocus does not send
+domains, session details, security material, or an account identifier with that
+request. Users who do not want coordinates sent to AlAdhan should leave Prayer
+blocking disabled.
+
+All other application state remains on the Mac.
 
 `forcefocus diagnostics --output <path>` includes product/system versions,
 health-check results, and sanitized recent logs. Domain names, coordinates,

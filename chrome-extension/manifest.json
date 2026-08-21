@@ -2,12 +2,10 @@
   "manifest_version": 3,
   "name": "ForcedFocus",
   "description": "Quick access to ForcedFocus \u2014 unbreakable website blocker for macOS.",
-  "version": "3.0.0",
+  "version": "1.0.0",
   "permissions": [
     "alarms",
     "declarativeNetRequest",
-    "declarativeNetRequestFeedback",
-    "browsingData",
     "notifications",
     "storage",
     "webNavigation",
@@ -17,6 +15,7 @@
     "activeTab"
   ],
   "host_permissions": [
+    "<all_urls>",
     "http://127.0.0.1:7070/*",
     "http://localhost:7070/*"
   ],
@@ -42,6 +41,7 @@
       "resources": [
         "blocked.html",
         "blocked.js",
+        "fonts/*",
         "icons/*",
         "shared/*"
       ],

@@ -1,7 +1,27 @@
 import Cocoa
+import CoreText
 import WebKit
 import Foundation
 import UserNotifications
+
+private enum AppTypeface {
+    static let postscriptName = "NaNSuperXSerifTextAR-TRIAL-Regular"
+
+    static func registerBundledFonts() {
+        guard let fontURLs = Bundle.main.urls(forResourcesWithExtension: "ttf", subdirectory: "Fonts") else {
+            return
+        }
+
+        for fontURL in fontURLs {
+            CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
+        }
+    }
+
+    static func statusFont() -> NSFont {
+        NSFont(name: postscriptName, size: 14)
+            ?? NSFont.systemFont(ofSize: 14)
+    }
+}
 
 // MARK: - Status Item Manager
 class StatusBarItemManager {
@@ -12,8 +32,16 @@ class StatusBarItemManager {
     
     func createStatusItem() -> NSStatusItem {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        item.button?.title = "🗿 Focus"
+        item.button?.font = AppTypeface.statusFont()
+        if let image = NSImage(systemSymbolName: "scope", accessibilityDescription: "ForcedFocus idle") {
+            image.isTemplate = true
+            item.button?.image = image
+        }
+        item.button?.imagePosition = .imageLeft
+        item.button?.title = "Focus"
+        item.button?.toolTip = "ForcedFocus is idle"
+        item.button?.setAccessibilityLabel("ForcedFocus")
+        item.button?.setAccessibilityHelp("Open ForcedFocus status and session controls")
         item.button?.action = #selector(AppDelegate.togglePopover(_:))
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         return item
@@ -53,6 +81,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, WKScriptM
     }
     
     func applicationDidFinishLaunching(_ aNotification: Notification) {
+        AppTypeface.registerBundledFonts()
+
         // Create status item
         statusItem = StatusBarItemManager.shared.createStatusItem()
         
@@ -76,8 +106,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, WKScriptM
         let vc = NSViewController()
         let config = WKWebViewConfiguration()
         
-        // Enable developer tools for debugging
+        #if DEBUG
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        #endif
         
         // Setup messaging
         config.userContentController.add(WeakScriptMessageHandler(delegate: self), name: "nativeCallback")
@@ -99,6 +130,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, WKScriptM
         
         // Create visual effect view
         let effectView = NSVisualEffectView(frame: NSMakeRect(0, 0, 320, 540))
+        // The web content uses the product's light-on-dark semantic tokens.
+        // Pin the native material to dark Aqua so light system appearance cannot
+        // turn the transparent popover into a low-contrast surface.
+        effectView.appearance = NSAppearance(named: .darkAqua)
         effectView.material = .popover
         effectView.blendingMode = .behindWindow
         effectView.state = .active
@@ -181,8 +216,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, WKScriptM
     
     @objc func showAbout() {
         let alert = NSAlert()
-        alert.messageText = "ForcedFocus MenuBar"
-        alert.informativeText = "Version 2.1.0\n\nUnbreakable productivity for macOS."
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+        alert.messageText = "ForcedFocus Menu Bar"
+        alert.informativeText = "Version \(version)\n\nUnbreakable productivity for macOS."
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
@@ -234,7 +270,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, WKScriptM
             var rem = json["remaining_seconds"] as? Int ?? 0
             
             if sessionType == "pomodoro" && pomoPhase == "done" {
-                if let img = NSImage(systemSymbolName: "checkmark.seal.fill", accessibilityDescription: nil) {
+                if let img = NSImage(systemSymbolName: "checkmark.seal.fill", accessibilityDescription: "Focus session complete") {
                     img.isTemplate = true
                     statusItem.button?.image = img
                 }
@@ -244,7 +280,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, WKScriptM
             }
             
             if sessionType == "rescue" {
-                if let img = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: nil) {
+                if let img = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: "Rescue Mode active") {
                     img.isTemplate = true
                     statusItem.button?.image = img
                 }
@@ -256,6 +292,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, WKScriptM
             if sessionType == "prayer" {
                 statusItem.button?.image = nil
                 setTitle("🕌 PRAYER")
+                return
+            }
+
+            if sessionType == "sleep" {
+                let h = rem / 3600
+                let m = (rem % 3600) / 60
+                let timeStr: String
+                if h > 0 {
+                    timeStr = String(format: "%dh %02dm", h, m)
+                } else if m > 0 {
+                    timeStr = String(format: "%2dm", m)
+                } else {
+                    timeStr = String(format: "%2ds", rem % 60)
+                }
+                if let img = NSImage(systemSymbolName: "moon.stars.fill", accessibilityDescription: "Sleep Schedule active") {
+                    img.isTemplate = true
+                    statusItem.button?.image = img
+                }
+                statusItem.button?.imagePosition = .imageLeft
+                let wakeAt = (json["sleep_schedule"] as? [String: Any])?["wake_at"] as? String
+                statusItem.button?.toolTip = wakeAt.map { "Sleep Schedule active. Wake at \($0)." } ?? "Sleep Schedule active."
+                setTitle("SLEEP " + timeStr)
                 return
             }
             
@@ -291,7 +349,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, WKScriptM
                 iconName = "brain.head.profile"
             }
             
-            if let img = NSImage(systemSymbolName: iconName, accessibilityDescription: nil) {
+            if let img = NSImage(systemSymbolName: iconName, accessibilityDescription: "Focus session active") {
                 img.isTemplate = true
                 statusItem.button?.image = img
             }
@@ -318,7 +376,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, WKScriptM
                         timeStr = String(format: "%2dm", m)
                     }
                     
-                    if let img = NSImage(systemSymbolName: "arrow.down", accessibilityDescription: nil) {
+                    if let img = NSImage(systemSymbolName: "arrow.down", accessibilityDescription: "Scheduled session starts soon") {
                         img.isTemplate = true
                         statusItem.button?.image = img
                     }
@@ -329,7 +387,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, WKScriptM
             }
             
             var prayerCountdownShown = false
-            if !scheduleCountdownShown, let prayerSecs = json["next_prayer_seconds"] as? Int, prayerSecs <= 300 {
+            var sleepCountdownShown = false
+            if !scheduleCountdownShown,
+               let sleepSchedule = json["sleep_schedule"] as? [String: Any],
+               sleepSchedule["enabled"] as? Bool == true,
+               let nextStart = sleepSchedule["next_start_at"] as? String,
+               let startTime = parseISO8601Date(nextStart) {
+                let diff = startTime.timeIntervalSince(Date())
+                if diff > 0 && diff <= 300 {
+                    let diffInt = Int(diff)
+                    let timeStr = diffInt < 60
+                        ? String(format: "%2ds", diffInt)
+                        : String(format: "%2dm", diffInt / 60)
+                    if let img = NSImage(systemSymbolName: "moon.stars.fill", accessibilityDescription: "Sleep Schedule starts soon") {
+                        img.isTemplate = true
+                        statusItem.button?.image = img
+                    }
+                    statusItem.button?.imagePosition = .imageLeft
+                    statusItem.button?.toolTip = "Sleep Schedule starts soon."
+                    setTitle("SLEEP " + timeStr)
+                    sleepCountdownShown = true
+                }
+            }
+            if !scheduleCountdownShown && !sleepCountdownShown, let prayerSecs = json["next_prayer_seconds"] as? Int, prayerSecs <= 300 {
                 let m = prayerSecs / 60
                 let s = prayerSecs % 60
                 let timeStr: String
@@ -338,7 +418,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, WKScriptM
                 } else {
                     timeStr = String(format: "%2dm", m)
                 }
-                if let img = NSImage(systemSymbolName: "arrow.down", accessibilityDescription: nil) {
+                if let img = NSImage(systemSymbolName: "arrow.down", accessibilityDescription: "Prayer block starts soon") {
                     img.isTemplate = true
                     statusItem.button?.image = img
                 }
@@ -347,9 +427,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, WKScriptM
                 prayerCountdownShown = true
             }
             
-            if !scheduleCountdownShown && !prayerCountdownShown {
-                statusItem.button?.image = nil
-                setTitle("🗿 Focus")
+            if !scheduleCountdownShown && !sleepCountdownShown && !prayerCountdownShown {
+                if let image = NSImage(systemSymbolName: "scope", accessibilityDescription: "ForcedFocus idle") {
+                    image.isTemplate = true
+                    statusItem.button?.image = image
+                }
+                statusItem.button?.imagePosition = .imageLeft
+                statusItem.button?.toolTip = "ForcedFocus is idle"
+                setTitle("Focus")
             }
         }
     }
@@ -513,8 +598,13 @@ extension AppDelegate: WKNavigationDelegate, WKUIDelegate {
         isReloading = false
         errorCount = 0
         if statusItem.button?.title == "Offline" {
-            statusItem.button?.image = nil
-            statusItem.button?.title = "🗿 Focus"
+            if let image = NSImage(systemSymbolName: "scope", accessibilityDescription: "ForcedFocus idle") {
+                image.isTemplate = true
+                statusItem.button?.image = image
+            }
+            statusItem.button?.imagePosition = .imageLeft
+            statusItem.button?.toolTip = "ForcedFocus is idle"
+            statusItem.button?.title = "Focus"
         }
         
         // Inject JavaScript to communicate with native layer

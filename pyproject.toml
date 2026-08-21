@@ -7,7 +7,7 @@ name = "forcedfocus"
 version = "1.0.0"
 description = "A high-integrity macOS focus enforcement utility."
 readme = "README.md"
-requires-python = "==3.13.14"
+requires-python = "==3.13.15"
 license = {text = "MIT"}
 authors = [{name = "ForcedFocus contributors"}]
 dependencies = ["rich>=13.9,<14"]
@@ -18,13 +18,19 @@ forcefocus = "cli.main:main"
 [project.optional-dependencies]
 dev = [
   "mypy>=1.13,<2",
-  "pytest>=8.3,<9",
+  "pytest>=9.0.3,<10",
   "pytest-cov>=6,<7",
   "ruff>=0.8,<1",
 ]
 
 [tool.setuptools]
-packages = ["forcefocus", "cli", "cli.commands"]
+packages = [
+  "forcefocus",
+  "forcefocus.enforcement",
+  "forcefocus.session",
+  "cli",
+  "cli.commands",
+]
 package-dir = {forcefocus = "daemon/forcefocus", cli = "cli"}
 
 [tool.pytest.ini_options]
@@ -34,7 +40,8 @@ addopts = "--strict-markers"
 
 [tool.coverage.run]
 branch = true
-source = ["daemon/forcefocus", "daemon/forcefocus_daemon.py", "cli"]
+source = ["daemon", "cli"]
+omit = ["daemon/tests/*"]
 
 [tool.coverage.report]
 fail_under = 85

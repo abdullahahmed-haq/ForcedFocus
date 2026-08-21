@@ -32,6 +32,7 @@ def mock_daemon(tmp_config_dir, monkeypatch):
     monkeypatch.setattr("forcefocus_daemon.PERMA_BLOCK_FILE", tmp_config_dir / "perma_blocklist.json")
     monkeypatch.setattr("forcefocus_daemon.TEMPLATES_FILE", tmp_config_dir / "templates.json")
     monkeypatch.setattr("forcefocus_daemon.HISTORY_FILE", tmp_config_dir / "session_history.json")
+    monkeypatch.setattr("forcefocus_daemon.SLEEP_SCHEDULE_FILE", tmp_config_dir / "sleep_schedule.json")
     monkeypatch.setattr("forcefocus_daemon.PRAYER_CACHE_FILE", tmp_config_dir / "prayer_calendar.json")
 
     # Patch constants in extracted modules
@@ -44,6 +45,7 @@ def mock_daemon(tmp_config_dir, monkeypatch):
     monkeypatch.setattr("forcefocus.domains.GROUPS_FILE", tmp_config_dir / "groups.json")
     monkeypatch.setattr("forcefocus.domains.PERMA_BLOCK_FILE", tmp_config_dir / "perma_blocklist.json")
     monkeypatch.setattr("forcefocus.schedules.TEMPLATES_FILE", tmp_config_dir / "templates.json")
+    monkeypatch.setattr("forcefocus.sleep_schedule.SLEEP_SCHEDULE_FILE", tmp_config_dir / "sleep_schedule.json")
     monkeypatch.setattr("forcefocus.session.core.SESSION_LOCK", tmp_config_dir / "session.lock")
     monkeypatch.setattr("forcefocus.prayer.PRAYER_CACHE_FILE", tmp_config_dir / "prayer_calendar.json")
     monkeypatch.setattr("forcefocus.prayer.SETTINGS_FILE", tmp_config_dir / "settings.json")

@@ -58,12 +58,14 @@ class ForcedFocusDaemon:
         from forcefocus.api_socket import SocketAPIManager
         from forcefocus.api_http import HTTPAPIManager
         from forcefocus.notifications import NotificationsManager
+        from forcefocus.sleep_schedule import SleepScheduleManager
         from forcefocus.state import DaemonState
         from forcefocus.events import EventManager
         self.events = EventManager()
         self.state = DaemonState()
         self.state_store = StateStore(CONFIG_DIR)
         self.recovery_required = False
+        self.migration_in_progress = False
         self.enforcement_manager = EnforcementManager(self)
         self.session_manager = SessionManager(self)
         self.prayer_manager = PrayerManager(self)
@@ -76,6 +78,7 @@ class ForcedFocusDaemon:
         self.dns_proxy = None
         self.sni_proxy = None
         self.state_changed = threading.Event()
+        self.shutdown_event = threading.Event()
         self.state_revision = 0
         self.notification_warning: dict | None = None
         self.prayer_ban_active = ""
@@ -119,6 +122,7 @@ class ForcedFocusDaemon:
         self.history_manager = HistoryManager(self)
         self.settings_manager = SettingsManager(self)
         self.domains_manager = DomainsManager(self)
+        self.sleep_schedule_manager = SleepScheduleManager(self)
         from forcefocus.schedules import SchedulesManager
         self.schedules_manager = SchedulesManager(self)
         self.command_service = CommandService(self)
@@ -159,14 +163,20 @@ class ForcedFocusDaemon:
         self._ensure_groups_file()
         self._ensure_perma_blocklist_file()
         self._ensure_templates_file()
+        self._ensure_sleep_schedule_file()
         self._ensure_sounds_dir()
+        self.migration_in_progress = True
         try:
             self.state_store.ensure_schema()
         except StateStoreError as exc:
             self.recovery_required = True
             logging.critical("State migration failed: %s", exc)
             raise
+        finally:
+            self.migration_in_progress = False
+        self._secure_state_permissions()
         self._load_ks_hash_cache()
+        self.sleep_schedule_manager.load()
         self._generate_api_token()
         self._install_signal_handlers()
         self._recover_stale_hosts_lock()
@@ -176,11 +186,18 @@ class ForcedFocusDaemon:
         # Restore session BEFORE starting watchdog to avoid race (C2)
         with self.lock:
             self._restore_session()
-        wt = threading.Thread(target=self.watchdog_manager.watchdog_loop, name="watchdog", daemon=True)
+        wt = threading.Thread(target=self.watchdog_manager.watchdog_loop, name="watchdog")
         wt.start()
-        ht = threading.Thread(target=self.http_api_manager.http_server, name="http", daemon=True)
+        ht = threading.Thread(target=self.http_api_manager.http_server, name="http")
         ht.start()
-        self.socket_api_manager.socket_server()
+        try:
+            self.socket_api_manager.socket_server()
+        finally:
+            self.shutdown_event.set()
+            self.http_api_manager.shutdown()
+            wt.join(timeout=5)
+            ht.join(timeout=5)
+            logging.info("ForcedFocus daemon stopped; persisted enforcement state was preserved.")
     @staticmethod
     def _ensure_config_dir():
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -191,28 +208,81 @@ class ForcedFocusDaemon:
             LISTS_FILE.write_text(
                 json.dumps({"blacklist": [], "whitelist": []}, indent=2)
             )
-            os.chmod(str(LISTS_FILE), 0o644)
+            os.chmod(str(LISTS_FILE), 0o600)
     @staticmethod
     def _ensure_groups_file():
         if not GROUPS_FILE.exists():
             GROUPS_FILE.write_text(json.dumps({}, indent=2))
-            os.chmod(str(GROUPS_FILE), 0o644)
+            os.chmod(str(GROUPS_FILE), 0o600)
     @staticmethod
     def _ensure_perma_blocklist_file():
         if not PERMA_BLOCK_FILE.exists():
             PERMA_BLOCK_FILE.write_text(
                 json.dumps({"domains": [], "pending_unlocks": {}}, indent=2)
             )
-            os.chmod(str(PERMA_BLOCK_FILE), 0o644)
+            os.chmod(str(PERMA_BLOCK_FILE), 0o600)
     @staticmethod
     def _ensure_templates_file():
         if not TEMPLATES_FILE.exists():
             TEMPLATES_FILE.write_text(json.dumps({"templates": []}, indent=2))
-            os.chmod(str(TEMPLATES_FILE), 0o644)
+            os.chmod(str(TEMPLATES_FILE), 0o600)
+    @staticmethod
+    def _ensure_sleep_schedule_file():
+        if not SLEEP_SCHEDULE_FILE.exists():
+            SLEEP_SCHEDULE_FILE.write_text(
+                json.dumps(
+                    {
+                        "enabled": False,
+                        "days_of_week": [],
+                        "sleep_time": "22:00",
+                        "wake_time": "07:00",
+                        "mode": "blacklist",
+                        "blacklist": [],
+                        "whitelist": [],
+                        "suppressed_occurrences": [],
+                        "pending_config": None,
+                        "pending_apply_at": None,
+                    },
+                    indent=2,
+                )
+            )
+            os.chmod(str(SLEEP_SCHEDULE_FILE), 0o600)
     @staticmethod
     def _ensure_sounds_dir():
         SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
         os.chmod(str(SOUNDS_DIR), 0o755)
+    @staticmethod
+    def _secure_state_permissions():
+        """Keep user state private even after upgrading older installations."""
+        for path in (
+            SESSION_LOCK,
+            SESSION_LOCK_PREVIOUS,
+            STATE_MANIFEST_FILE,
+            KS_HASH_FILE,
+            LISTS_FILE,
+            GROUPS_FILE,
+            SETTINGS_FILE,
+            PERMA_BLOCK_FILE,
+            TEMPLATES_FILE,
+            HISTORY_FILE,
+            SLEEP_SCHEDULE_FILE,
+            PRAYER_CACHE_FILE,
+        ):
+            if path.exists():
+                ForcedFocusDaemon._secure_state_file_permissions(path)
+
+    @staticmethod
+    def _secure_state_file_permissions(path: Path):
+        """Remove stale app-owned user locks before applying private permissions."""
+        if sys.platform == "darwin":
+            subprocess.run(
+                ["chflags", "nouchg", str(path)],
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=5,
+            )
+        os.chmod(str(path), 0o600)
     def _load_ks_hash_cache(self):
         try:
             if KS_HASH_FILE.exists():
@@ -245,9 +315,13 @@ class ForcedFocusDaemon:
             logging.error("Failed to write API token: %s", exc)
     def _install_signal_handlers(self):
         def _handler(signum, _frame):
-            # Non-blocking: just set flag, watchdog will re-enforce (C1 fix)
-            # We keep this handler minimal as only a few functions are signal-safe.
-            self._reenforce_flag = True
+            # Signal handlers only set thread-safe flags. The main/socket and
+            # watchdog loops perform shutdown or re-enforcement outside the
+            # signal context.
+            if signum == signal.SIGHUP:
+                self._reenforce_flag = True
+            else:
+                self.shutdown_event.set()
         signal.signal(signal.SIGTERM, _handler)
         signal.signal(signal.SIGINT, _handler)
         signal.signal(signal.SIGHUP, _handler)
@@ -337,21 +411,40 @@ class ForcedFocusDaemon:
             logging.info("Restored %d recurring schedules.", len(self.recurring_schedules))
         # If no active session data, we're done (schedule-only lockfile)
         if not data.get("expiry"):
+            if data.get("session_type") == "sleep":
+                self._sleep_restore_error("missing expiry")
             if self.schedules:
                 self._persist_session_lock()
             return
         try:
             expiry = datetime.fromisoformat(data["expiry"])
-        except (KeyError, ValueError) as exc:
-            logging.error(
-                "Invalid expiry in session.lock (%s). Removing active session data.",
+        except (KeyError, TypeError, ValueError) as exc:
+            previous = self.state_store.read_json(SESSION_LOCK_PREVIOUS)
+            if previous is not None and previous != data:
+                try:
+                    datetime.fromisoformat(previous["expiry"])
+                except (KeyError, TypeError, ValueError):
+                    previous = None
+            if previous is not None:
+                logging.warning(
+                    "Invalid expiry in session.lock (%s); restoring the previous durable session.",
+                    exc,
+                )
+                self.schedules = []
+                self.recurring_schedules = []
+                self._atomic_write_json(SESSION_LOCK, previous)
+                self._restore_session()
+                return
+            self.recovery_required = True
+            logging.critical(
+                "Invalid expiry in session.lock (%s); preserving state for recovery.",
                 exc,
             )
-            if self.schedules:
-                self._persist_session_lock()
-            else:
-                SESSION_LOCK.unlink(missing_ok=True)
             return
+        if data.get("session_type") == "sleep":
+            error = self._validate_restored_sleep_session(data, expiry)
+            if error:
+                self._sleep_restore_error(error)
         prayer_suspension = data.get("prayer_suspension")
         suspended_remaining = None
         if isinstance(prayer_suspension, dict):
@@ -447,6 +540,7 @@ class ForcedFocusDaemon:
         if prayer_suspension:
             self.prayer_suspension = prayer_suspension
         self.state.session.session_group_id = data.get("session_group_id")
+        self.state.session.sleep_occurrence = data.get("sleep_occurrence")
         self.state.session.active = True
         if self.state.session.mode in ("whitelist", "ban"):
             self.original_dns = data.get("original_dns", {})
@@ -455,6 +549,8 @@ class ForcedFocusDaemon:
             )
             if self.state.session.mode == "ban":
                 self.state.active_domains = []
+            if not isinstance(self.state.active_domains, list):
+                raise ValueError("Persisted active_domains must be a list.")
             self.active_domains_set = set(self.state.active_domains)
             self.whitelist_resolved = data.get("whitelist_resolved", {})
             self.whitelist_count = data.get("whitelist_count", len(self.state.active_domains))
@@ -463,10 +559,16 @@ class ForcedFocusDaemon:
             )
         else:
             self.state.active_domains = data.get(
+                "active_domains",
                 data.get("blocked_domains", self.domains_manager.get_blacklist_domains()),
             )
+            if not isinstance(self.state.active_domains, list):
+                raise ValueError("Persisted active_domains must be a list.")
             self.active_domains_set = set(self.state.active_domains)
         self.session_base_domains = data.get("session_base_domains", [])
+        prayer_still_active = self.watchdog_manager.restore_prayer_suspension(
+            get_continuous_time(), datetime.now()
+        )
         if self.state.session.session_type == "pomodoro" and self.state.pomodoro.pomo_phase_expiry:
             if datetime.now() >= self.state.pomodoro.pomo_phase_expiry:
                 logging.info("Pomodoro phase expired during downtime. Advancing.")
@@ -478,7 +580,9 @@ class ForcedFocusDaemon:
                 )
                 return
         is_break = self.state.session.session_type == "pomodoro" and self.state.pomodoro.pomo_phase == "break"
-        if self.state.session.mode in ("whitelist", "ban"):
+        if prayer_still_active:
+            self.watchdog_manager._enforce_prayer_ban()
+        elif self.state.session.mode in ("whitelist", "ban"):
             if not is_break:
                 self.enforcement_manager._enforce_whitelist()
         else:
@@ -486,6 +590,61 @@ class ForcedFocusDaemon:
                 self.enforcement_manager._enforce_block()
         logging.info(
             "Resuming %s session — %d min remaining.", self.state.session.mode, int(remaining / 60)
+        )
+
+    def _sleep_restore_error(self, reason: str) -> None:
+        self.recovery_required = True
+        logging.critical(
+            "Sleep session recovery required; preserving session.lock: %s", reason
+        )
+        raise StateStoreError(f"Sleep session recovery required: {reason}")
+
+    def _validate_restored_sleep_session(self, data: dict, expiry: datetime) -> str | None:
+        if expiry.tzinfo is not None or expiry <= datetime.now():
+            return "expiry is not a future local timestamp"
+        mode = data.get("mode")
+        if mode not in ("blacklist", "whitelist", "ban"):
+            return "mode is invalid"
+        occurrence = data.get("sleep_occurrence")
+        if not isinstance(occurrence, str) or "T" not in occurrence:
+            return "sleep occurrence identifier is invalid"
+        try:
+            start = datetime.fromisoformat(occurrence)
+        except ValueError:
+            return "sleep occurrence identifier is invalid"
+        if start.tzinfo is not None:
+            return "sleep occurrence identifier is invalid"
+        if start > datetime.now():
+            return "sleep occurrence has not started"
+        schedule = self.sleep_schedule_manager.schedule
+        if not schedule.get("enabled") or start.weekday() not in schedule["days_of_week"]:
+            return "sleep occurrence does not match the active schedule"
+        expected_start, expected_wake = self.sleep_schedule_manager._interval_for_date(
+            schedule, start
+        )
+        if start != expected_start or expiry != expected_wake:
+            return "sleep occurrence deadline does not match the active schedule"
+        if mode == "ban":
+            return None
+        base_domains = data.get("session_base_domains")
+        active_domains = data.get("active_domains")
+        if not self._valid_sleep_domain_snapshot(base_domains):
+            return "selected-site snapshot is missing or invalid"
+        if not self._valid_sleep_domain_snapshot(active_domains):
+            return "active selected-site snapshot is missing or invalid"
+        if len(base_domains) > SLEEP_SELECTED_DOMAIN_MAX:
+            return "selected-site snapshot exceeds the Chrome rule limit"
+        return None
+
+    def _valid_sleep_domain_snapshot(self, domains: object) -> bool:
+        return (
+            isinstance(domains, list)
+            and bool(domains)
+            and all(
+                isinstance(domain, str)
+                and self.domains_manager.validate_domain(domain)
+                for domain in domains
+            )
         )
     # ── Session History / Tracking ─────────────────────────────────────────────
     def _record_session_history(self):
@@ -615,6 +774,7 @@ class ForcedFocusDaemon:
                 data["active_domains"] = self.state.active_domains
             data["session_base_domains"] = getattr(self, "session_base_domains", [])
             data["session_group_id"] = self.state.session.session_group_id
+            data["sleep_occurrence"] = self.state.session.sleep_occurrence
             data["intent"] = self.state.session.intent
             data["intent_tasks"] = self.state.session.intent_tasks
             data["session_groups"] = self.state.session.session_groups
@@ -624,8 +784,11 @@ class ForcedFocusDaemon:
             self.state_store.backup_session_lock(SESSION_LOCK, SESSION_LOCK_PREVIOUS)
             self._atomic_write_json(SESSION_LOCK, data)
             logging.info("session.lock re-created from memory.")
+            return True
         except Exception as exc:
-            logging.error("Failed to persist session.lock: %s", exc)
+            self.recovery_required = True
+            logging.critical("Failed to persist session.lock: %s", exc)
+            return False
     def _validate_settings(self, settings_dict: dict) -> tuple[bool, str, dict]:
         return self.settings_manager.validate_settings(settings_dict)
     # ── Passphrase ────────────────────────────────────────────────────────────

@@ -21,8 +21,7 @@ from cli.commands.sound import cmd_sound
 from cli.commands.templates import cmd_templates
 from cli.commands.doctor import cmd_doctor
 from cli.commands.diagnostics import cmd_diagnostics
-
-PRODUCT_VERSION = "1.0.0"
+from forcefocus.version import PRODUCT_VERSION
 
 def build_parser():
     # Base parser with global flags

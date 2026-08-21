@@ -1,6 +1,6 @@
 module.exports = [
   {
-    files: ["js/*.js", "../shared/*.js"],
+    files: ["js/*.js", "shared/*.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",
@@ -17,7 +17,7 @@ module.exports = [
       }
     },
     rules: {
-      "no-unused-vars": "warn"
+      "no-unused-vars": "error"
     }
   }
 ];

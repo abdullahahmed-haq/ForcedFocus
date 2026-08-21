@@ -76,7 +76,7 @@ def cmd_schedule(args):
             
         try:
             days_list = [int(d) for d in days.split(",")]
-        except:
+        except (TypeError, ValueError):
             out.print_error("Invalid days format. Use comma-separated ints 0-6", code="USAGE_ERROR")
             return
             

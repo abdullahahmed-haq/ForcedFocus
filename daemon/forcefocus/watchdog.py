@@ -99,8 +99,7 @@ class WatchdogManager:
         self.daemon._wd_dns_counter = 0
         self.daemon._wd_persist_counter = 0
         self.daemon._wd_ip_update_counter = 0
-        while True:
-            time.sleep(WATCHDOG_INTERVAL)
+        while not self.daemon.shutdown_event.wait(WATCHDOG_INTERVAL):
             try:
                 self.watchdog_tick()
             except Exception as exc:
@@ -115,8 +114,12 @@ class WatchdogManager:
             now = datetime.now()
 
             self._check_prayer_blocks(now)
-            
-            is_recurring_trigger, cmd_to_start, recurring_rule_id = self._check_recurring_schedules(now, now_mono)
+            self.daemon.sleep_schedule_manager.promote_pending_if_due(now)
+
+            cmd_to_start = self.daemon.sleep_schedule_manager.start_if_due(now)
+            is_recurring_trigger = False
+            if not cmd_to_start:
+                is_recurring_trigger, cmd_to_start, recurring_rule_id = self._check_recurring_schedules(now, now_mono)
             if not cmd_to_start:
                 cmd_to_start = self._check_oneoff_schedules(now)
 
@@ -175,14 +178,7 @@ class WatchdogManager:
                     logging.error("Failed to record Prayer start: %s", exc)
                 self.daemon.notifications_manager.play_sound("prayer")
                 
-                if not getattr(self.daemon, "sni_proxy", None):
-                    self.daemon.enforcement_manager.start_sni_proxy()
-                    
-                self.daemon.enforcement_manager._enforce_firewall(True)
-                self.daemon.enforcement_manager._enforce_browser_policies(True)
-                self.daemon.enforcement_manager._kill_vpn_interfaces()
-                self.daemon.enforcement_manager._kill_restricted_apps()
-                self.daemon.enforcement_manager._flush_dns()
+                self._enforce_prayer_ban()
                 self.daemon.notifications_manager.broadcast_state_changed()
         else:
             if current_prayer:
@@ -202,9 +198,29 @@ class WatchdogManager:
                         self.daemon.enforcement_manager.stop_sni_proxy()
                 self.daemon.notifications_manager.broadcast_state_changed()
 
+    def _enforce_prayer_ban(self):
+        if not getattr(self.daemon, "sni_proxy", None):
+            self.daemon.enforcement_manager.start_sni_proxy()
+        self.daemon.enforcement_manager._enforce_firewall(True)
+        self.daemon.enforcement_manager._enforce_browser_policies(True)
+        self.daemon.enforcement_manager._kill_vpn_interfaces()
+        self.daemon.enforcement_manager._kill_restricted_apps()
+        self.daemon.enforcement_manager._flush_dns()
+
+    def restore_prayer_suspension(self, now_mono, now) -> bool:
+        """Reconcile a persisted Prayer suspension before normal enforcement."""
+        if not self.daemon.prayer_suspension:
+            return False
+        active_window = self.daemon.prayer_manager.active_prayer_window(now)
+        if active_window:
+            self.daemon.prayer_ban_active = active_window["name"]
+            return True
+        self._resume_session_after_prayer(now_mono, now)
+        return False
+
     def _suspend_session_for_prayer(self, now_mono, now):
         """Freeze regular-session and Pomodoro deadlines for a Prayer takeover."""
-        if not self.daemon.state.session.active or self.daemon.prayer_suspension:
+        if not self.daemon.state.session.active or self.daemon.prayer_suspension or self.daemon.state.session.session_type == "sleep":
             return
 
         session_remaining = max(0.0, self.daemon._mono_session_end - now_mono)
@@ -336,7 +352,9 @@ class WatchdogManager:
         return cmd_to_start
 
     def _handle_scheduled_start(self, cmd_to_start, is_recurring_trigger, recurring_rule_id):
-        if is_recurring_trigger:
+        if cmd_to_start.get("_sleep"):
+            logging.info("Sleep Schedule occurrence starting.")
+        elif is_recurring_trigger:
             logging.info("Recurring schedule triggered. Starting session.")
             self.daemon.notifications_manager.play_sound("scheduled")
             self.daemon.notifications_manager.send_mac_notification(
@@ -406,13 +424,22 @@ class WatchdogManager:
                 if now_mono_perma >= mono_end:
                     expired.append(domain)
             if expired:
+                previous_domains = list(self.daemon.perma_blocklist)
+                previous_pending = dict(self.daemon.perma_pending_unlocks)
+                previous_mono_ends = dict(self.daemon._mono_perma_unlock_ends)
                 for domain in expired:
                     if domain in self.daemon.perma_blocklist:
                         self.daemon.perma_blocklist.remove(domain)
                     self.daemon.perma_pending_unlocks.pop(domain, None)
                     self.daemon._mono_perma_unlock_ends.pop(domain, None)
                     logging.info("Permanent unblock completed: '%s' removed from blocklist.", domain)
-                self.daemon._save_perma_state()
+                try:
+                    self.daemon.domains_manager._save_perma_state()
+                except Exception:
+                    self.daemon.perma_blocklist = previous_domains
+                    self.daemon.perma_pending_unlocks = previous_pending
+                    self.daemon._mono_perma_unlock_ends = previous_mono_ends
+                    raise
                 self.daemon.enforcement_manager._enforce_perma_block()
                 self.daemon.notifications_manager.broadcast_state_changed()
 

@@ -47,6 +47,20 @@ SETTINGS_FILE = CONFIG_DIR / "settings.json"
 PERMA_BLOCK_FILE = CONFIG_DIR / "perma_blocklist.json"
 TEMPLATES_FILE = CONFIG_DIR / "templates.json"
 HISTORY_FILE = CONFIG_DIR / "session_history.json"
+SLEEP_SCHEDULE_FILE = CONFIG_DIR / "sleep_schedule.json"
+# Chrome guarantees 5,000 dynamic DNR rules. Sleep blacklist entries use two
+# rules each, so reserve 1,000 rules for permanent blocks and cap selections.
+CHROME_DYNAMIC_RULE_LIMIT = 5000
+SLEEP_DNR_PERMANENT_RULE_HEADROOM = 1000
+SLEEP_SELECTED_DOMAIN_MAX = (
+    CHROME_DYNAMIC_RULE_LIMIT - SLEEP_DNR_PERMANENT_RULE_HEADROOM
+) // 2
+SLEEP_DNR_RULES_PER_PERMANENT_DOMAIN = 2
+SLEEP_DNR_RULES_PER_BLACKLIST_DOMAIN = 2
+SLEEP_DNR_RULES_PER_WHITELIST_DOMAIN = 1
+# Whitelist and ban modes block all traffic, then allow localhost and selected
+# domains. The two block-all and two localhost allow rules are always present.
+SLEEP_DNR_WHITELIST_STATIC_RULES = 4
 PRAYER_CACHE_FILE = CONFIG_DIR / "prayer_calendar.json"
 MAX_HISTORY_ENTRIES = 10000
 

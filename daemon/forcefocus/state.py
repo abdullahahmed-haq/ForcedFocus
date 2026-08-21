@@ -14,6 +14,7 @@ class SessionState:
     intent_tasks: list = field(default_factory=list)
     session_groups: list[str] = field(default_factory=list)
     session_group_id: str | None = None
+    sleep_occurrence: str | None = None
 
     def reset(self):
         """Atomically reset all session fields to defaults."""
@@ -27,6 +28,7 @@ class SessionState:
         self.intent_tasks = []
         self.session_groups = []
         self.session_group_id = None
+        self.sleep_occurrence = None
 
 
 @dataclass  

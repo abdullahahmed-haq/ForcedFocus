@@ -1,16 +1,19 @@
 {
   "name": "web",
   "version": "1.0.0",
-  "description": "",
-  "main": "app.js",
+  "description": "ForcedFocus local dashboard and browser client assets.",
+  "private": true,
   "scripts": {
-    "build:css": "npx @tailwindcss/cli -i css/settings-input.css -o css/setting.css && npx @tailwindcss/cli -i css/styles-input.css -o css/styles.css && npx @tailwindcss/cli -i css/tailwind-menubar.css -o css/menubar.css"
+    "build:css": "npx @tailwindcss/cli -i css/settings.source.css -o css/settings.css && npx @tailwindcss/cli -i css/dashboard.source.css -o css/dashboard.css && npx @tailwindcss/cli -i css/menubar.source.css -o css/menubar.css",
+    "lint": "eslint --config eslint.config.js js/*.js shared/*.js",
+    "test:ui": "playwright test"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "devDependencies": {
+    "@playwright/test": "1.58.2",
     "@tailwindcss/cli": "^4.3.2",
     "eslint": "^10.7.0",
     "postcss": "^8.5.19",

@@ -1,6 +1,6 @@
 // blocked.js — ForcedFocus Chrome Extension blocked page script
 // Accurate, drift-free timer synced directly to the daemon's monotonic clock.
-// Supports both session-based blocks and permanent blocks.
+// Supports session-based blocks, including Sleep Schedule, and permanent blocks.
 
 const API = "http://127.0.0.1:7070";
 import { formatTime } from "./shared/utils.js";
@@ -16,6 +16,7 @@ let endTime = 0;           // Date.now() + remaining_ms at last sync
 let totalDuration = 0;     // total session duration in seconds
 let sessionType = null;    // "standard" | "pomodoro" | "rescue"
 let pomoPhase = null;      // "focus" | "break"
+let sleepWakeAt = null;
 let isSessionActive = false;
 let isPermaBlocked = false;  // true if domain is in permanent blocklist
 let permaHasPending = false; // true if a pending unblock exists
@@ -55,6 +56,15 @@ function playBlockedSound(settings) {
       console.warn("Could not play blocked sound:", e);
     }
   }
+}
+
+function formatWakeAt(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (!Number.isNaN(date.getTime())) {
+    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  return String(value).slice(0, 5);
 }
 
 function handleStateUpdate(status, permaBlocklist, settings) {
@@ -102,6 +112,9 @@ function handleStateUpdate(status, permaBlocklist, settings) {
     isSessionActive = true;
     sessionType = status.session_type || "standard";
     pomoPhase = status.pomo_phase || null;
+    sleepWakeAt = sessionType === "sleep"
+      ? formatWakeAt(status.sleep_schedule?.wake_at || status.expires_at)
+      : null;
     totalDuration = status.total_duration_seconds || 0;
 
     let remaining;
@@ -176,6 +189,12 @@ function startTick() {
 function updateSessionDisplay(remSecs) {
   if (!badge) return;
   const timeStr = formatTime(remSecs);
+
+  if (sessionType === "sleep") {
+    const wakeAt = sleepWakeAt || "wake time";
+    badge.textContent = `SLEEP - wake at ${wakeAt} - ${timeStr} remaining`;
+    return;
+  }
 
   if (sessionType === "prayer") {
     badge.textContent = `🕌 PRAYER — ${timeStr} remaining`;

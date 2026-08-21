@@ -39,6 +39,10 @@ class DomainsManager:
 
     def save_lists(self, lists: dict):
         new_mtime = self.daemon._atomic_write_json(LISTS_FILE, lists, indent=2)
+        self.daemon._cached_lists = {
+            k: v.copy() if isinstance(v, list) else v
+            for k, v in lists.items()
+        }
         if new_mtime:
             self.daemon._cached_lists_mtime = new_mtime
         self.daemon.notifications_manager.broadcast_state_changed()
@@ -202,8 +206,12 @@ class DomainsManager:
                 if gname in groups:
                     bl.extend(groups[gname])
 
+        return self.expand_blacklist_domains(bl)
+
+    def expand_blacklist_domains(self, domains: list[str]) -> list[str]:
+        """Expand an explicit blacklist snapshot without reading global lists."""
         expanded = set()
-        for d in bl:
+        for d in domains:
             domain = d.strip().lower()
             if "." not in domain:
                 continue
@@ -227,7 +235,8 @@ class DomainsManager:
 
     def expand_whitelist_domains(self, domains: list[str]) -> list[str]:
         expanded = set()
-        expanded.update(CDN_INFRASTRUCTURE_DOMAINS)
+        if domains:
+            expanded.update(CDN_INFRASTRUCTURE_DOMAINS)
 
         for d in domains:
             domain = d.strip().lower()
@@ -305,12 +314,9 @@ class DomainsManager:
                 "unlocks_at": unlocks_at.isoformat(),
             }
         data = {"domains": self.daemon.perma_blocklist, "pending_unlocks": pending}
-        try:
-            new_mtime = self.daemon._atomic_write_json(PERMA_BLOCK_FILE, data, indent=2)
-            if new_mtime:
-                self.daemon._cached_perma_mtime = new_mtime
-        except Exception as exc:
-            logging.error("Failed to save permanent blocklist: %s", exc)
+        new_mtime = self.daemon._atomic_write_json(PERMA_BLOCK_FILE, data, indent=2)
+        if new_mtime:
+            self.daemon._cached_perma_mtime = new_mtime
 
 
 
@@ -345,6 +351,7 @@ class DomainsManager:
         if not domains_raw:
             return {"status": "error", "message": "No domains provided."}
         with self.daemon.lock:
+            previous_domains = list(self.daemon.perma_blocklist)
             added = 0
             for d in domains_raw:
                 domain = self.extract_domain(d)
@@ -355,7 +362,15 @@ class DomainsManager:
                     added += 1
             if added == 0:
                 return {"status": "error", "message": "No valid new domains to add."}
-            self._save_perma_state()
+            try:
+                self._save_perma_state()
+            except Exception as exc:
+                self.daemon.perma_blocklist = previous_domains
+                logging.error("Failed to save permanent blocklist: %s", exc)
+                return {
+                    "status": "error",
+                    "message": "Failed to save permanent blocklist.",
+                }
             self.daemon.events.emit(Event.PERMA_BLOCK_UPDATED)
             self.daemon.notifications_manager.broadcast_state_changed()
             logging.info("Added %d domain(s) to permanent blocklist.", added)
@@ -412,7 +427,16 @@ class DomainsManager:
             self.daemon._mono_perma_unlock_ends[domain] = (
                 get_continuous_time() + PERMA_UNLOCK_DELAY_S
             )
-            self._save_perma_state()
+            try:
+                self._save_perma_state()
+            except Exception as exc:
+                self.daemon.perma_pending_unlocks.pop(domain, None)
+                self.daemon._mono_perma_unlock_ends.pop(domain, None)
+                logging.error("Failed to save permanent unblock request: %s", exc)
+                return {
+                    "status": "error",
+                    "message": "Failed to save permanent unblock request.",
+                }
             self.daemon.notifications_manager.broadcast_state_changed()
             unlock_str = unlocks_at.strftime("%H:%M:%S")
             logging.info(
@@ -438,9 +462,19 @@ class DomainsManager:
                     "status": "error",
                     "message": f"No pending unblock for '{domain}'.",
                 }
-            del self.daemon.perma_pending_unlocks[domain]
-            self.daemon._mono_perma_unlock_ends.pop(domain, None)
-            self._save_perma_state()
+            previous_unlock = self.daemon.perma_pending_unlocks.pop(domain)
+            previous_mono_end = self.daemon._mono_perma_unlock_ends.pop(domain, None)
+            try:
+                self._save_perma_state()
+            except Exception as exc:
+                self.daemon.perma_pending_unlocks[domain] = previous_unlock
+                if previous_mono_end is not None:
+                    self.daemon._mono_perma_unlock_ends[domain] = previous_mono_end
+                logging.error("Failed to cancel permanent unblock: %s", exc)
+                return {
+                    "status": "error",
+                    "message": "Failed to cancel permanent unblock.",
+                }
             self.daemon.notifications_manager.broadcast_state_changed()
             logging.info("Cancelled permanent unblock for '%s'.", domain)
             return {

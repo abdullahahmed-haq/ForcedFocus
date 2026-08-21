@@ -229,7 +229,7 @@ class SchedulesManager:
                 return {"status": "error", "message": "Template not found."}
             start_payload = self.template_start_payload(template)
 
-        result = self.daemon._start_session(start_payload)
+        result = self.daemon.session_manager._start_session(start_payload)
         if result.get("status") == "ok":
             with self.daemon.lock:
                 templates = self.load_templates()
@@ -445,6 +445,8 @@ class SchedulesManager:
                 rule, scheduled["start_time"], scheduled["end_time"]
             ):
                 return "Recurring schedule overlaps with a scheduled session."
+        if self.daemon.sleep_schedule_manager.conflicts_recurring(rule):
+            return "Recurring schedule overlaps with Sleep Schedule."
         return None
 
     def oneoff_conflicts_with_recurring(

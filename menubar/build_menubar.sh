@@ -1,22 +1,38 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 APP_NAME="ForcedFocusBar"
-VERSION_FILE="../VERSION"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VERSION_FILE="$PROJECT_ROOT/VERSION"
 PRODUCT_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
-APP_DIR="$APP_NAME.app"
+APP_DIR="$SCRIPT_DIR/$APP_NAME.app"
 BIN_DIR="$APP_DIR/Contents/MacOS"
 RES_DIR="$APP_DIR/Contents/Resources"
+FONT_SOURCE_DIR="$PROJECT_ROOT/web/assets/fonts"
+FONT_RES_DIR="$RES_DIR/Fonts"
 PLIST="$APP_DIR/Contents/Info.plist"
+SWIFT_SOURCE="$SCRIPT_DIR/forcefocus_menubar.swift"
+SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+BUILD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/forcefocus-menubar.XXXXXX")"
+
+trap 'rm -rf "$BUILD_TMP"' EXIT
 
 echo "🔨 Building ForcedFocus Menu Bar App..."
 
 # Create directory structure
 mkdir -p "$BIN_DIR"
 mkdir -p "$RES_DIR"
+mkdir -p "$FONT_RES_DIR"
+
+# Keep the native status item independent of user-installed fonts.
+for font in "$FONT_SOURCE_DIR"/NaNSuperXSerifTextAR-TRIAL-*.ttf; do
+    [[ -f "$font" ]] || continue
+    cp "$font" "$FONT_RES_DIR/"
+done
 
 # Copy Icon
-ICON_SRC="../icon/icnsFile_03f04725724b4a02637c68df9e718e76_Complete_Anatomy__Clear_Dark_.icns"
+ICON_SRC="$PROJECT_ROOT/packaging/macos/assets/AppIcon.icns"
 if [ -f "$ICON_SRC" ]; then
     cp "$ICON_SRC" "$RES_DIR/AppIcon.icns"
     echo "✅ Applied custom App Icon."
@@ -26,12 +42,23 @@ fi
 
 # Compile CSS
 echo "🎨 Compiling Tailwind CSS..."
-npm run --prefix ../web build:css
+npm run --prefix "$PROJECT_ROOT/web" build:css
 
-# Compile Swift code
-# Link against AppKit and WebKit
-swiftc forcefocus_menubar.swift -o "$BIN_DIR/$APP_NAME" \
-    -framework AppKit -framework WebKit -sdk $(xcrun --show-sdk-path)
+# Build each supported architecture explicitly, then merge them into the
+# unsigned Universal executable. Signing/notarization remains a release step.
+for arch in arm64 x86_64; do
+    swiftc "$SWIFT_SOURCE" \
+        -target "${arch}-apple-macos13.0" \
+        -sdk "$SDK_PATH" \
+        -framework AppKit \
+        -framework WebKit \
+        -o "$BUILD_TMP/$APP_NAME-$arch"
+done
+xcrun lipo -create \
+    "$BUILD_TMP/$APP_NAME-arm64" \
+    "$BUILD_TMP/$APP_NAME-x86_64" \
+    -output "$BIN_DIR/$APP_NAME"
+xcrun lipo -info "$BIN_DIR/$APP_NAME"
 
 # Create Info.plist
 cat <<EOF > "$PLIST"

@@ -13,9 +13,10 @@ export function escapeHtml(str) {
 }
 
 export function formatTime(totalSeconds) {
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  const s = totalSeconds % 60;
+  const normalized = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const h = Math.floor(normalized / 3600);
+  const m = Math.floor((normalized % 3600) / 60);
+  const s = normalized % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
@@ -30,7 +31,7 @@ export function extractDomain(input) {
     } else {
       d = d.split("/")[0].split("?")[0].split("#")[0];
     }
-  } catch (_error) {
+  } catch {
     d = d.split("/")[0].split("?")[0].split("#")[0];
   }
 
@@ -55,15 +56,21 @@ export function extractDomain(input) {
 }
 
 let _toastTimeout = null;
+let _toastHideTimeout = null;
 export function showToast(toastEl, msg, duration = 3000) {
   if (!toastEl) return;
   if (_toastTimeout) clearTimeout(_toastTimeout);
+  if (_toastHideTimeout) clearTimeout(_toastHideTimeout);
   toastEl.textContent = msg;
   toastEl.classList.remove("hidden");
   toastEl.classList.add("show");
   _toastTimeout = setTimeout(() => {
+    _toastTimeout = null;
     toastEl.classList.remove("show");
     // Wait for opacity transition before fully hiding
-    setTimeout(() => toastEl.classList.add("hidden"), 300);
+    _toastHideTimeout = setTimeout(() => {
+      _toastHideTimeout = null;
+      toastEl.classList.add("hidden");
+    }, 300);
   }, duration);
 }

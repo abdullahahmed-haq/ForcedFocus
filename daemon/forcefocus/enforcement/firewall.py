@@ -142,14 +142,35 @@ class FirewallMixin:
                         filters.extend(
                             [
                                 "block return out proto tcp from any to any port 443",
+                                "block return out proto udp from any to any port 443",
                                 "block return out proto tcp from any to any port 80",
                             ]
                         )
-                    elif (self.daemon.state.session.active and self.daemon.state.session.mode in ("whitelist", "ban") and not is_break):
+                    elif (
+                        self.daemon.state.session.active
+                        and self.daemon.state.session.mode == "ban"
+                        and not is_break
+                    ):
                         filters.extend(
                             [
+                                "block return out proto tcp from any to any port 443",
+                                "block return out proto udp from any to any port 443",
+                                "block return out proto tcp from any to any port 80",
+                            ]
+                        )
+                    elif (
+                        self.daemon.state.session.active
+                        and self.daemon.state.session.mode == "whitelist"
+                        and not is_break
+                    ):
+                        filters.extend(
+                            [
+                                # A permanent block must not be bypassed by a
+                                # Sleep/regular whitelist's allow rule.
+                                "block return out quick from any to <ff_blocked_ips>",
                                 "pass out quick from any to <ff_whitelisted_ips>",
                                 "block return out proto tcp from any to any port 443",
+                                "block return out proto udp from any to any port 443",
                                 "block return out proto tcp from any to any port 80",
                             ]
                         )

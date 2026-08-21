@@ -18,8 +18,9 @@ product is single-user per Mac in version 1.0.0.
 - Recovery must preserve user data and restore the original network state.
 - Every privileged mutation must be explicit, logged safely, idempotent, and
   testable without changing the developer's Mac.
-- The product is local-only. There is no telemetry, account, cloud sync, or
-  remote control plane in version 1.0.0.
+- The product is local-first. There is no telemetry, account, cloud sync, or
+  remote control plane in version 1.0.0. Optional Prayer scheduling makes the
+  narrowly disclosed calendar-provider request described in `PRIVACY.md`.
 - Existing CLI, HTTP, Unix socket, configuration paths, and extension clients
   remain compatible during the 1.0.0 migration.
 

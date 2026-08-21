@@ -12,9 +12,9 @@ from pathlib import Path
 from rich.table import Table
 
 from cli.output import console
+from forcefocus.version import PRODUCT_VERSION, STATE_SCHEMA_VERSION
 
 
-PRODUCT_VERSION = "1.0.0"
 SOCK_PATH = Path("/var/run/forcefocus.sock")
 CONFIG_DIR = Path("/etc/forcefocus")
 PLIST_PATH = Path("/Library/LaunchDaemons/com.forcefocus.daemon.plist")
@@ -75,7 +75,13 @@ def gather_checks() -> tuple[list[DoctorCheck], dict]:
         DoctorCheck("launchd_definition", "ok" if PLIST_PATH.exists() else "error", str(PLIST_PATH)),
         DoctorCheck("unix_socket", "ok" if socket_health.get("status") == "ok" else "error", socket_health.get("error_code", "connected")),
         DoctorCheck("http_api", "ok" if http_health.get("status") == "ok" else "error", http_health.get("error_code", "connected")),
-        DoctorCheck("state_schema", "ok" if manifest and manifest.get("schema_version") == 1 else "error", f"schema={manifest.get('schema_version') if manifest else 'unavailable'}"),
+        DoctorCheck(
+            "state_schema",
+            "ok"
+            if manifest and manifest.get("schema_version") == STATE_SCHEMA_VERSION
+            else "error",
+            f"schema={manifest.get('schema_version') if manifest else 'unavailable'}; expected={STATE_SCHEMA_VERSION}",
+        ),
         DoctorCheck("recovery", "error" if socket_health.get("recovery_required") else "ok", "required" if socket_health.get("recovery_required") else "not required"),
         DoctorCheck("pf_anchor_config", "ok" if Path("/etc/pf.conf").exists() and 'anchor "forcefocus"' in Path("/etc/pf.conf").read_text(errors="ignore") else "warning", "configured" if Path("/etc/pf.conf").exists() else "pf.conf unavailable"),
         DoctorCheck("hosts_markers", "ok", f"session={int('BEGIN FORCEFOCUS ─' in hosts_text)} permanent={int('BEGIN FORCEFOCUS PERMANENT' in hosts_text)}"),

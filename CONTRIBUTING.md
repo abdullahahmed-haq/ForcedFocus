@@ -14,6 +14,7 @@
 - CLI behavior belongs in `cli/`.
 - Browser behavior belongs in `web/` or `chrome-extension/`.
 - Canonical browser-shared code belongs in `shared/` only.
+- macOS installation and package resources belong in `packaging/macos/`.
 - Documentation and operational scripts belong in `docs/` and `scripts/`.
 
 ## Validation

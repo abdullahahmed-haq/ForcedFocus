@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  repository-gates:
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.13.14
+          cache: pip
+          cache-dependency-path: requirements/dev.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --requirement requirements/dev.lock
+          npm ci --prefix web
+      - name: Validate installer scripts
+        run: bash -n install.sh uninstall.sh scripts/sync_shared.sh
+      - name: Run repository checks
+        run: make check PYTHON=python
+
+  frontend-gates:
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked frontend dependencies
+        run: npm ci --prefix web
+      - name: Install Playwright Chromium
+        run: npm --prefix web exec -- playwright install chromium
+      - name: Run frontend UI tests
+        run: npm --prefix web run test:ui
+      - name: Audit frontend dependencies
+        if: always()
+        run: npm audit --prefix web --audit-level=moderate

@@ -31,44 +31,53 @@ class SocketAPIManager:
         sock.settimeout(SOCKET_TIMEOUT)
         logging.info("Command socket listening at %s.", SOCK_PATH)
 
-        while True:
-            try:
-                conn, _ = sock.accept()
-            except socket.timeout:
-                continue
-            except OSError as exc:
-                logging.error("Socket accept error: %s", exc)
-                time.sleep(1)
-                continue
-            try:
-                conn.settimeout(5.0)
-                MAX_MSG_SIZE = 1 * 1024 * 1024  # 1MB
-                chunks = []
-                total_size = 0
-                while True:
-                    chunk = conn.recv(8192)
-                    if not chunk:
-                        break
-                    total_size += len(chunk)
-                    if total_size > MAX_MSG_SIZE:
-                        logging.warning("Socket message exceeded %d bytes.", MAX_MSG_SIZE)
-                        conn.sendall(json.dumps({"status": "error", "error_code": "INVALID_INPUT", "message": "Message too large."}).encode("utf-8"))
-                        chunks = []
-                        break
-                    chunks.append(chunk)
-                raw = b"".join(chunks).decode("utf-8").strip()
-                if not raw:
-                    continue
-                response = self.dispatch_command(raw)
-                conn.sendall(json.dumps(response).encode("utf-8"))
-            except Exception as exc:
-                logging.error("Socket handler error: %s", exc)
+        try:
+            while not self.daemon.shutdown_event.is_set():
                 try:
-                    conn.sendall(json.dumps({"status": "error", "error_code": "SYSTEM_FAILURE", "message": "The command could not be completed."}).encode("utf-8"))
-                except Exception:
-                    pass
-            finally:
-                conn.close()
+                    conn, _ = sock.accept()
+                except socket.timeout:
+                    continue
+                except OSError as exc:
+                    if self.daemon.shutdown_event.is_set():
+                        break
+                    logging.error("Socket accept error: %s", exc)
+                    time.sleep(1)
+                    continue
+                try:
+                    conn.settimeout(5.0)
+                    MAX_MSG_SIZE = 1 * 1024 * 1024  # 1MB
+                    chunks = []
+                    total_size = 0
+                    while True:
+                        chunk = conn.recv(8192)
+                        if not chunk:
+                            break
+                        total_size += len(chunk)
+                        if total_size > MAX_MSG_SIZE:
+                            logging.warning("Socket message exceeded %d bytes.", MAX_MSG_SIZE)
+                            conn.sendall(json.dumps({"status": "error", "error_code": "INVALID_INPUT", "message": "Message too large."}).encode("utf-8"))
+                            chunks = []
+                            break
+                        chunks.append(chunk)
+                    raw = b"".join(chunks).decode("utf-8").strip()
+                    if not raw:
+                        continue
+                    response = self.dispatch_command(raw)
+                    conn.sendall(json.dumps(response).encode("utf-8"))
+                except Exception as exc:
+                    logging.error("Socket handler error: %s", exc)
+                    try:
+                        conn.sendall(json.dumps({"status": "error", "error_code": "SYSTEM_FAILURE", "message": "The command could not be completed."}).encode("utf-8"))
+                    except Exception:
+                        pass
+                finally:
+                    conn.close()
+        finally:
+            sock.close()
+            try:
+                os.unlink(SOCK_PATH)
+            except FileNotFoundError:
+                pass
 
     def dispatch_command(self, raw: str) -> dict:
         try:

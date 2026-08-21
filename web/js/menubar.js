@@ -1,4 +1,5 @@
 import { api as sharedApi } from "../shared/api.js";
+import { renderIntentTasks as renderSharedIntentTasks } from "../shared/intent-tasks.js";
 
 const API = "http://127.0.0.1:7070";
 let currentMode = "blacklist";
@@ -6,7 +7,6 @@ let currentType = "standard";
 let totalSecs = 0;
 let currentRemaining = 0;
 let animationFrameId = null;
-let apiToken = "";
 let selectedGroups = [];
 let availableGroups = {};
 let availableLists = { blacklist: [], whitelist: [] };
@@ -34,6 +34,30 @@ const AudioManager = {
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
+const PRESSED_CONTROL_SELECTOR = ".mode-chip, .type-chip, .dur-chip, .pomo-chip, .group-chip";
+
+function syncPressedControls(root = document) {
+  const controls = root.matches?.(PRESSED_CONTROL_SELECTOR)
+    ? [root]
+    : [...(root.querySelectorAll?.(PRESSED_CONTROL_SELECTOR) || [])];
+  controls.forEach((control) => {
+    if (control.tagName === "BUTTON") {
+      control.setAttribute("aria-pressed", String(control.classList.contains("active")));
+    }
+  });
+}
+
+function initializePressedControls() {
+  syncPressedControls();
+  new MutationObserver((records) => {
+    records.forEach((record) => {
+      if (record.type === "attributes") syncPressedControls(record.target);
+      record.addedNodes?.forEach((node) => {
+        if (node.nodeType === Node.ELEMENT_NODE) syncPressedControls(node);
+      });
+    });
+  }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
+}
 
 const els = {
   badge: $("#mbBadge"),
@@ -95,6 +119,10 @@ const els = {
 };
 
 const api = (method, path, body = null) => sharedApi(method, path, body, API);
+
+document.addEventListener("forcedfocus:intent-error", (event) => {
+  showNotificationFallback(event.detail?.message || "The task update could not be saved.");
+});
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -238,12 +266,30 @@ function startCountdown(rem) {
   animationFrameId = requestAnimationFrame(tick);
 }
 
+// ── Sleep session formatting ─────────────────────────────────────────────────
+
+function formatSleepDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString([], {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatWakeTime(value) {
+  if (!value) return "";
+  if (/^\d{2}:\d{2}(:\d{2})?$/.test(value)) return value.slice(0, 5);
+  return formatSleepDate(value);
+}
+
 let isStarting = false;
 
 function renderStatus(data) {
   if (isStarting) return; // Prevent UI jank while daemon applies kernel rules
   showNotificationFallback(data.notification_warning?.message || "");
-
   const mbUnlockInfo = document.getElementById("mbUnlockInfo");
   if (mbUnlockInfo) mbUnlockInfo.classList.add("hidden");
 
@@ -261,12 +307,12 @@ function renderStatus(data) {
     if (active) {
       // Populate Info Grid
       els.infoMode.textContent =
-        data.session_type === "rescue" ? "RESCUE" : data.session_type === "prayer" ? "PRAYER" : data.mode.toUpperCase();
+        data.session_type === "rescue" ? "RESCUE" : data.session_type === "prayer" ? "PRAYER" : data.session_type === "sleep" ? `SLEEP ${data.mode.toUpperCase()}` : data.mode.toUpperCase();
       els.infoType.textContent = data.session_type.toUpperCase();
-      els.infoExpires.textContent = data.expires_at || "--:--";
+      els.infoExpires.textContent = data.session_type === "sleep" ? formatWakeTime(data.sleep_schedule?.wake_at || data.expires_at) : data.expires_at || "--:--";
 
       els.badgeText.textContent =
-        data.session_type === "rescue" ? "RESCUE" : data.session_type === "prayer" ? "PRAYER" : "ACTIVE";
+        data.session_type === "rescue" ? "RESCUE" : data.session_type === "prayer" ? "PRAYER" : data.session_type === "sleep" ? "SLEEP" : "ACTIVE";
       els.badge.classList.add("active");
 
       if (data.session_type === "pomodoro") {
@@ -286,7 +332,7 @@ function renderStatus(data) {
       } else {
         totalSecs = data.total_duration_seconds || data.remaining_seconds;
         startCountdown(data.remaining_seconds);
-        els.label.textContent = "REMAINING";
+        els.label.textContent = data.session_type === "sleep" ? `WAKE AT ${formatWakeTime(data.sleep_schedule?.wake_at || data.expires_at)}` : "REMAINING";
         els.nextRow.classList.add("hidden");
         $(".timer-ring").classList.remove("break");
       }
@@ -379,80 +425,8 @@ function renderStatus(data) {
 // ── Intent Tasks ─────────────────────────────────────────────────────────────
 
 function renderIntentTasks(container, tasks) {
-  if (!tasks || tasks.length === 0) {
-    container.innerHTML = "";
-    return;
-  }
-  
-  const ul = document.createElement("ul");
-  ul.dir = "auto";
-  ul.style.listStyle = "none";
-  ul.style.padding = "0";
-  ul.style.margin = "0";
-  ul.style.display = "flex";
-  ul.style.flexDirection = "column";
-  ul.style.gap = "8px";
-  ul.style.width = "100%";
-  
-  tasks.forEach((task, index) => {
-    const li = document.createElement("li");
-    li.dir = "auto";
-    li.className = "intent-task-item";
-    li.style.display = "flex";
-    li.style.alignItems = "flex-start";
-    li.style.gap = "8px";
-    li.style.margin = "1px 0";
-    li.style.width = "100%";
-    li.style.boxSizing = "border-box";
-    
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.className = "custom-checkbox";
-    checkbox.checked = task.completed;
-    
-    checkbox.addEventListener("change", async (e) => {
-      task.completed = e.target.checked;
-      label.style.textDecoration = task.completed ? "line-through" : "none";
-      label.style.opacity = task.completed ? "0.5" : "1";
-      
-      try {
-        await api("POST", "/api/intent", { 
-          intent: document.getElementById("activeIntentDisplay").textContent, 
-          intent_tasks: tasks 
-        });
-      } catch (err) {
-        console.error("Failed to update task status", err);
-      }
-    });
-    
-    const label = document.createElement("label");
-    label.dir = "auto";
-    label.textContent = task.text;
-    label.style.cursor = "pointer";
-    label.style.flex = "1";
-    label.style.lineHeight = "1.4";
-    label.style.textDecoration = task.completed ? "line-through" : "none";
-    label.style.opacity = task.completed ? "0.5" : "1";
-    
-    label.addEventListener("click", (e) => {
-      e.preventDefault();
-      checkbox.click();
-    });
-    
-    li.appendChild(checkbox);
-    li.appendChild(label);
-    ul.appendChild(li);
-  });
-  
-  container.innerHTML = "";
-  container.appendChild(ul);
-}
-
-function templateDurationLabel(template) {
-  if (template.session_type === "pomodoro") {
-    return `${template.focus_minutes || 25}/${template.break_minutes || 5} × ${template.cycles || 4}`;
-  }
-  return `${template.duration_minutes || 0}m`;
+  const intent = document.getElementById("activeIntentDisplay")?.textContent || "";
+  renderSharedIntentTasks(container, tasks, api, intent);
 }
 
 async function fetchTemplates() {
@@ -483,7 +457,8 @@ function renderTemplates() {
   section.classList.remove("hidden");
   
   sessionTemplates.forEach((template) => {
-    const chip = document.createElement("div");
+    const chip = document.createElement("button");
+    chip.type = "button";
     chip.className = "group-chip";
     chip.textContent = template.name || "Untitled";
     chip.style.cursor = "pointer";
@@ -566,7 +541,8 @@ function renderGroups() {
   els.groupGrid.innerHTML = "";
 
   names.forEach((name) => {
-    const chip = document.createElement("div");
+    const chip = document.createElement("button");
+    chip.type = "button";
     chip.className =
       "group-chip" + (selectedGroups.includes(name) ? " active" : "");
     chip.textContent = name;
@@ -958,7 +934,7 @@ function initEvents() {
         } else {
           showNotificationFallback("Error: " + res.message);
         }
-      } catch (err) {
+      } catch {
         showNotificationFallback("Connection failed.");
       } finally {
         mbBtnContinueFocus.disabled = false;
@@ -1004,6 +980,7 @@ window.onPopoverHide = () => {
 };
 
 document.addEventListener("DOMContentLoaded", async () => {
+  initializePressedControls();
   initEvents();
 
   // S8: Load settings and refresh status immediately, don't wait for onPopoverShow

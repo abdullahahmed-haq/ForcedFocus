@@ -32,7 +32,7 @@ print_success() {
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DAEMON_SRC="${SCRIPT_DIR}/daemon"
 CLI_SRC="${SCRIPT_DIR}/cli"
-PLIST_SRC="${SCRIPT_DIR}/daemon/com.forcefocus.daemon.plist"
+PLIST_SRC="${SCRIPT_DIR}/packaging/macos/launchd/com.forcefocus.daemon.plist"
 WEB_DIR_SRC="${SCRIPT_DIR}/web"
 
 DAEMON_DST="/usr/local/bin/forcefocus_daemon.py"
@@ -43,7 +43,9 @@ WEB_DIR_DST="/usr/local/share/forcefocus/web"
 PLIST_LABEL="com.forcefocus.daemon"
 
 # ── Header ──────────────────────────────────────────────────────────────────
-clear
+if [[ -t 1 ]]; then
+    clear
+fi
 echo -e "${MAGENTA}${BOLD}┌─────────────────────────────────────────────────────────────┐${NC}"
 echo -e "${MAGENTA}${BOLD}│${NC}  ${WHITE}${BOLD}⚡ ForcedFocus Installer${NC}                               ${MAGENTA}${BOLD}│${NC}"
 echo -e "${MAGENTA}${BOLD}│${NC}  ${DIM}Deploying Absolute Productivity Infrastructure${NC}          ${MAGENTA}${BOLD}│${NC}"
@@ -59,7 +61,6 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # Verify source files
-# Verify source files
 for d in "$DAEMON_SRC" "$CLI_SRC" "$WEB_DIR_SRC"; do
     if [[ ! -d "$d" ]]; then
         echo -e "${RED}${BOLD} ✗ Missing Directory${NC}: ${d}"
@@ -71,10 +72,18 @@ if [[ ! -f "$PLIST_SRC" ]]; then
     exit 1
 fi
 
-# Check for Python 3
+# Development installs must use the same runtime declared by the package. A
+# signed release must replace this lookup with its bundled Universal runtime.
+REQUIRED_PYTHON="3.13.15"
 PYTHON_BIN=""
-for candidate in /usr/local/bin/python3 /usr/bin/python3; do
-    if "$candidate" --version &>/dev/null 2>&1; then
+for candidate in \
+    /usr/local/lib/forcefocus/runtime/bin/python3 \
+    /opt/homebrew/bin/python3.13 \
+    /usr/local/bin/python3.13 \
+    /usr/local/bin/python3 \
+    /usr/bin/python3; do
+    if [[ -x "$candidate" ]] && \
+        [[ "$("$candidate" -c 'import platform; print(platform.python_version())' 2>/dev/null)" == "$REQUIRED_PYTHON" ]]; then
         PYTHON_BIN="$candidate"
         break
     fi
@@ -82,7 +91,8 @@ done
 
 if [[ -z "$PYTHON_BIN" ]]; then
     echo -e "${RED}${BOLD} ✗ Runtime Not Found${NC}"
-    echo "   Python 3 is required. Please install it first."
+    echo "   CPython ${REQUIRED_PYTHON} is required by this development installer."
+    echo "   Production releases must include the pinned Universal runtime."
     exit 1
 fi
 
@@ -96,7 +106,17 @@ if launchctl list 2>/dev/null | grep -q "$PLIST_LABEL"; then
     launchctl unload "$PLIST_DST" 2>/dev/null || true
     sleep 1
 fi
-pkill -9 -f "forcefocus_daemon.py" || true
+DAEMON_PROCESS_PATTERNS=(
+    "/usr/local/lib/forcefocus/daemon/forcefocus_daemon.py"
+    "/usr/local/bin/forcefocus_daemon.py"
+)
+for pattern in "${DAEMON_PROCESS_PATTERNS[@]}"; do
+    pkill -TERM -f "$pattern" 2>/dev/null || true
+done
+sleep 1
+for pattern in "${DAEMON_PROCESS_PATTERNS[@]}"; do
+    pkill -KILL -f "$pattern" 2>/dev/null || true
+done
 print_success "Daemon state cleared"
 
 print_step "Initializing secure directory structure"
@@ -106,6 +126,10 @@ chmod 711 "$CONFIG_DIR"
 chmod 755 "$CONFIG_DIR/sounds"
 chown root:wheel "$CONFIG_DIR"
 REAL_USER="${SUDO_USER:-$USER}"
+if ! id -u "$REAL_USER" &>/dev/null; then
+    echo -e "${RED}${BOLD} ✗ Invalid install user${NC}: ${REAL_USER}"
+    exit 1
+fi
 echo "$REAL_USER" > "$CONFIG_DIR/user"
 chmod 644 "$CONFIG_DIR/user"
 print_success "Created ${CONFIG_DIR}"
@@ -136,7 +160,7 @@ chown root:wheel "$DAEMON_DST"
 
 cat << EOF > "$CLI_DST"
 #!/bin/bash
-exec ${PYTHON_BIN} -c "import sys; sys.path.insert(0, '/usr/local/lib/forcefocus'); from cli.main import main; main()" "\$@"
+exec ${PYTHON_BIN} -c "import sys; sys.path[:0] = ['/usr/local/lib/forcefocus', '/usr/local/lib/forcefocus/daemon']; from cli.main import main; main()" "\$@"
 EOF
 chmod 755 "$CLI_DST"
 chown root:wheel "$CLI_DST"
@@ -220,7 +244,7 @@ fi
 print_success "Kernel anchor synchronized"
 
 print_step "Installing log rotation configuration"
-NEWSYSLOG_SRC="${SCRIPT_DIR}/daemon/forcefocus.newsyslog.conf"
+NEWSYSLOG_SRC="${SCRIPT_DIR}/packaging/macos/newsyslog/forcefocus.conf"
 NEWSYSLOG_DST="/etc/newsyslog.d/forcefocus.conf"
 if [[ -f "$NEWSYSLOG_SRC" ]]; then
     cp "$NEWSYSLOG_SRC" "$NEWSYSLOG_DST"

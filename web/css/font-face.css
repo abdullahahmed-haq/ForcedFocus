@@ -1,0 +1,25 @@
+/* Bundled application typeface. Do not add fallback families: every product
+ * surface intentionally uses NaN Super Serif Text AR-TRIAL. */
+@font-face { font-family: "NaN Super Serif Text AR-TRIAL"; src: url("../assets/fonts/NaNSuperXSerifTextAR-TRIAL-Thin.ttf") format("truetype"); font-weight: 100; font-style: normal; font-display: block; }
+@font-face { font-family: "NaN Super Serif Text AR-TRIAL"; src: url("../assets/fonts/NaNSuperXSerifTextAR-TRIAL-Light.ttf") format("truetype"); font-weight: 300; font-style: normal; font-display: block; }
+@font-face { font-family: "NaN Super Serif Text AR-TRIAL"; src: url("../assets/fonts/NaNSuperXSerifTextAR-TRIAL-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "NaN Super Serif Text AR-TRIAL"; src: url("../assets/fonts/NaNSuperXSerifTextAR-TRIAL-Medium.ttf") format("truetype"); font-weight: 500; font-style: normal; font-display: block; }
+@font-face { font-family: "NaN Super Serif Text AR-TRIAL"; src: url("../assets/fonts/NaNSuperXSerifTextAR-TRIAL-Semibold.ttf") format("truetype"); font-weight: 600; font-style: normal; font-display: block; }
+@font-face { font-family: "NaN Super Serif Text AR-TRIAL"; src: url("../assets/fonts/NaNSuperXSerifTextAR-TRIAL-Bold.ttf") format("truetype"); font-weight: 700; font-style: normal; font-display: block; }
+@font-face { font-family: "NaN Super Serif Text AR-TRIAL"; src: url("../assets/fonts/NaNSuperXSerifTextAR-TRIAL-ExtraBold.ttf") format("truetype"); font-weight: 800; font-style: normal; font-display: block; }
+@font-face { font-family: "NaN Super Serif Text AR-TRIAL"; src: url("../assets/fonts/NaNSuperXSerifTextAR-TRIAL-Black.ttf") format("truetype"); font-weight: 900; font-style: normal; font-display: block; }
+
+:root {
+  --ff-font: "NaN Super Serif Text AR-TRIAL";
+  --ff-type-caption: 0.6875rem;
+  --ff-type-label: 0.75rem;
+  --ff-type-body: 0.875rem;
+  --ff-type-title: 1.125rem;
+  --ff-type-heading: 1.375rem;
+  --ff-type-display: 2rem;
+  --ff-type-ring-value: 2.25rem;
+  --ff-type-metric: 3rem;
+  --ff-leading-tight: 1.15;
+  --ff-leading-normal: 1.4;
+  --ff-leading-relaxed: 1.55;
+}

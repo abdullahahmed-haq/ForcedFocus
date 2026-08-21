@@ -14,7 +14,7 @@ export function renderIntentTasks(container, tasks, apiFunction, intentText) {
   ul.style.gap = "8px";
   ul.style.width = "100%";
   
-  tasks.forEach((task, index) => {
+  tasks.forEach((task) => {
     const li = document.createElement("li");
     li.dir = "auto";
     li.className = "intent-task-item";
@@ -29,19 +29,35 @@ export function renderIntentTasks(container, tasks, apiFunction, intentText) {
     checkbox.type = "checkbox";
     checkbox.className = "custom-checkbox";
     checkbox.checked = task.completed;
+    checkbox.setAttribute("aria-label", task.text);
     
     checkbox.addEventListener("change", async (e) => {
+      const previous = Boolean(task.completed);
       task.completed = e.target.checked;
       label.style.textDecoration = task.completed ? "line-through" : "none";
       label.style.opacity = task.completed ? "0.5" : "1";
-      
+      checkbox.disabled = true;
+
       try {
-        await apiFunction("POST", "/api/intent", { 
-          intent: intentText, 
-          intent_tasks: tasks 
+        const response = await apiFunction("POST", "/api/intent", {
+          intent: intentText,
+          intent_tasks: tasks,
         });
+        if (!response || response.status !== "ok") {
+          throw new Error(response?.message || "The task update was rejected.");
+        }
       } catch (err) {
+        task.completed = previous;
+        checkbox.checked = previous;
+        label.style.textDecoration = previous ? "line-through" : "none";
+        label.style.opacity = previous ? "0.5" : "1";
         console.error("Failed to update task status", err);
+        container.dispatchEvent(new CustomEvent("forcedfocus:intent-error", {
+          bubbles: true,
+          detail: { message: err.message },
+        }));
+      } finally {
+        checkbox.disabled = false;
       }
     });
     

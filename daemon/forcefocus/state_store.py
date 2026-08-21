@@ -29,6 +29,7 @@ class StateStore:
         "perma_blocklist.json",
         "templates.json",
         "session_history.json",
+        "sleep_schedule.json",
     )
 
     def __init__(self, root: Path):
@@ -95,13 +96,16 @@ class StateStore:
             if manifest is None:
                 raise StateStoreError("state manifest is unreadable")
             schema_version = manifest.get("schema_version")
-            if schema_version != STATE_SCHEMA_VERSION:
+            if schema_version == STATE_SCHEMA_VERSION:
+                self._validate_current_state()
+                return manifest
+            if schema_version != 1:
                 raise StateStoreError(
                     f"unsupported state schema {schema_version!r}; expected {STATE_SCHEMA_VERSION}"
                 )
-            return manifest
+            return self._upgrade_v1_to_v2(manifest)
 
-        backup = self._backup_legacy_state()
+        backup = self._backup_state(0)
         try:
             if backup is not None:
                 for copied in backup.iterdir():
@@ -109,10 +113,17 @@ class StateStore:
                         if self.read_value(copied) is None:
                             raise StateStoreError(f"backup is unreadable: {copied.name}")
 
-            from forcefocus.migrations import MigrationError, migrate_v0_to_v1
+            from forcefocus.migrations import (
+                MigrationError,
+                migrate_v0_to_v1,
+                migrate_v1_to_v2,
+            )
 
             try:
                 migrated = migrate_v0_to_v1(self.root)
+                for path, value in migrated.items():
+                    self.write_json(path, value, indent=2)
+                migrated = migrate_v1_to_v2(self.root)
             except MigrationError as exc:
                 raise StateStoreError(str(exc)) from exc
             for path, value in migrated.items():
@@ -130,19 +141,55 @@ class StateStore:
                 self._restore_backup(backup)
             raise
 
+    def _validate_current_state(self) -> None:
+        """Reject corrupt current-schema documents before managers can overwrite them."""
+        from forcefocus.migrations import MigrationError, migrate_v0_to_v1
+
+        try:
+            # The legacy-to-v1 validators remain the canonical validators for
+            # documents whose shape did not change in schema v2. This call is
+            # read-only; its normalized return value is deliberately discarded.
+            migrate_v0_to_v1(self.root)
+        except MigrationError as exc:
+            raise StateStoreError(str(exc)) from exc
+
+    def _upgrade_v1_to_v2(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        """Upgrade a manifest-backed v1 installation with rollback protection."""
+        backup = self._backup_state(1)
+        try:
+            from forcefocus.migrations import MigrationError, migrate_v1_to_v2
+
+            try:
+                migrated = migrate_v1_to_v2(self.root)
+            except MigrationError as exc:
+                raise StateStoreError(str(exc)) from exc
+            for path, value in migrated.items():
+                self.write_json(path, value, indent=2)
+            upgraded = {
+                "product_version": PRODUCT_VERSION,
+                "schema_version": STATE_SCHEMA_VERSION,
+                "files": {name: STATE_SCHEMA_VERSION for name in self.state_files},
+            }
+            self.write_json(self.manifest_path, upgraded, indent=2)
+            return upgraded
+        except Exception:
+            if backup is not None:
+                self._restore_backup(backup)
+            raise
+
     def backup_session_lock(self, session_path: Path, previous_path: Path) -> None:
         """Keep the most recently known-good session document for recovery."""
         data = self.read_json(session_path)
         if data is not None:
             self.write_json(previous_path, data)
 
-    def _backup_legacy_state(self) -> Path | None:
+    def _backup_state(self, schema_version: int) -> Path | None:
         entries = [entry for entry in self.root.iterdir() if entry.name != "backups"]
         if not entries:
             return None
         self.backups_path.mkdir(mode=0o700, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        destination = self.backups_path / f"schema-0-{timestamp}"
+        destination = self.backups_path / f"schema-{schema_version}-{timestamp}"
         destination.mkdir(mode=0o700)
         for entry in entries:
             target = destination / entry.name

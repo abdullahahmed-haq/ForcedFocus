@@ -25,6 +25,7 @@ class SettingsManager:
     def save_settings(self, new_settings):
         """Save settings to JSON."""
         try:
+            prayer_calendar_changed = False
             if hasattr(self.daemon, 'settings'):
                 old_lat = self.daemon.settings.get("prayer_latitude")
                 old_lon = self.daemon.settings.get("prayer_longitude")
@@ -33,16 +34,20 @@ class SettingsManager:
                 new_lon = new_settings.get("prayer_longitude")
                 new_method = new_settings.get("prayer_method")
                 
-                if old_lat != new_lat or old_lon != new_lon or old_method != new_method:
-                    if PRAYER_CACHE_FILE.exists():
-                        try:
-                            PRAYER_CACHE_FILE.unlink()
-                        except Exception:
-                            pass
+                prayer_calendar_changed = (
+                    old_lat != new_lat or old_lon != new_lon or old_method != new_method
+                )
 
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             self.daemon._atomic_write_json(SETTINGS_FILE, new_settings, indent=2)
             self.daemon.settings = new_settings
+            if prayer_calendar_changed:
+                self.daemon.prayer_manager.invalidate_calendar()
+                if PRAYER_CACHE_FILE.exists():
+                    try:
+                        PRAYER_CACHE_FILE.unlink()
+                    except Exception as exc:
+                        logging.warning("Failed to remove stale prayer calendar: %s", exc)
             return True
         except Exception as exc:
             logging.error("Failed to save settings: %s", exc)

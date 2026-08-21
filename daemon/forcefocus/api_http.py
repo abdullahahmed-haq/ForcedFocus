@@ -21,13 +21,23 @@ from forcefocus.constants import (
     WEB_PORT,
 )
 
+
+class RequestBodyError(ValueError):
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
 class HTTPAPIManager:
     def __init__(self, daemon):
         self.daemon = daemon
+        self.server = None
 
     def http_server(self):
         try:
             server = EmbeddedHTTPServer((WEB_HOST, WEB_PORT), EmbeddedWebHandler)
+            self.server = server
             server.daemon_ref = self.daemon
             server.web_dir = WEB_DIR
             logging.info(
@@ -39,6 +49,14 @@ class HTTPAPIManager:
             server.serve_forever()
         except Exception as exc:
             logging.error("HTTP server failed: %s", exc)
+        finally:
+            self.server = None
+
+    def shutdown(self) -> None:
+        server = self.server
+        if server is not None:
+            server.shutdown()
+            server.server_close()
 
 class EmbeddedHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
@@ -88,11 +106,30 @@ class EmbeddedWebHandler(BaseHTTPRequestHandler):
             return origin
         return "http://127.0.0.1:7070"
 
+    def _send_security_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "base-uri 'none'; "
+            "frame-ancestors 'none'; "
+            "object-src 'none'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "font-src 'self' data:; "
+            "media-src 'self'; "
+            "connect-src 'self' http://127.0.0.1:7070 http://localhost:7070",
+        )
+
     def _send_json(self, data: dict, status: int = 200):
         body = json.dumps(data).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self._send_security_headers()
         self.send_header("Access-Control-Allow-Origin", self._get_cors_origin())
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Pragma", "no-cache")
@@ -112,6 +149,7 @@ class EmbeddedWebHandler(BaseHTTPRequestHandler):
             return
 
         self.send_response(204)
+        self._send_security_headers()
         self.send_header("Access-Control-Allow-Origin", self._get_cors_origin())
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Token")
@@ -151,6 +189,7 @@ class EmbeddedWebHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(body)))
+        self._send_security_headers()
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Access-Control-Allow-Origin", self._get_cors_origin())
         self.end_headers()
@@ -158,17 +197,24 @@ class EmbeddedWebHandler(BaseHTTPRequestHandler):
 
     def _read_body(self) -> dict:
         MAX_BODY = 10 * 1024 * 1024
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError) as exc:
+            raise RequestBodyError(400, "Invalid Content-Length header.") from exc
+        if length < 0:
+            raise RequestBodyError(400, "Invalid Content-Length header.")
         if length == 0:
             return {}
         if length > MAX_BODY:
-            logging.error("Body size %d exceeds MAX_BODY %d", length, MAX_BODY)
-            return {}
-        raw = self.rfile.read(length).decode("utf-8")
+            raise RequestBodyError(413, "Request body is too large.")
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
+            raw = self.rfile.read(length).decode("utf-8")
+            body = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RequestBodyError(400, "Request body must be valid JSON.") from exc
+        if not isinstance(body, dict):
+            raise RequestBodyError(400, "Request body must be a JSON object.")
+        return body
 
     def do_GET(self):
         if not self._is_host_allowed():
@@ -185,19 +231,20 @@ class EmbeddedWebHandler(BaseHTTPRequestHandler):
             return
 
         config_revealing_endpoints = {
+            "/api/history",
             "/api/settings",
             "/api/lists",
             "/api/perma-blocklist",
             "/api/schedules/recurring",
             "/api/templates",
             "/api/groups",
+            "/api/sleep-schedule",
+            "/api/session-domains",
         }
         if path in config_revealing_endpoints:
             if not self._is_api_token_valid():
                 self._send_json({"status": "error", "error_code": "UNAUTHORIZED", "message": "Unauthorized: invalid or missing API token."}, 401)
                 return
-
-        daemon = self.server.daemon_ref
 
         if path == "/api/version":
             self._send_json(
@@ -217,10 +264,12 @@ class EmbeddedWebHandler(BaseHTTPRequestHandler):
         elif path == "/api/templates":
             self._dispatch({"action": "get_templates"})
         elif path == "/api/stream":
+            daemon = self.server.daemon_ref
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
+            self._send_security_headers()
             self.send_header("Access-Control-Allow-Origin", self._get_cors_origin())
             self.end_headers()
             
@@ -274,6 +323,8 @@ class EmbeddedWebHandler(BaseHTTPRequestHandler):
             self._dispatch({"action": "get_history", "query": query_params})
         elif path == "/api/prayer":
             self._dispatch({"action": "get_prayer"})
+        elif path == "/api/sleep-schedule":
+            self._dispatch({"action": "get_sleep_schedule"})
         elif path == "/" or path == "":
             self._send_file(self.server.web_dir / "html" / "index.html")
         elif path == "/menubar":
@@ -304,7 +355,14 @@ class EmbeddedWebHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "error", "error_code": "UNAUTHORIZED", "message": "Unauthorized: invalid or missing API token."}, 401)
             return
 
-        body = self._read_body()
+        try:
+            body = self._read_body()
+        except RequestBodyError as exc:
+            self._send_json(
+                {"status": "error", "error_code": "INVALID_INPUT", "message": exc.message},
+                exc.status,
+            )
+            return
         if path == "/api/start":
             cmd = {
                 "action": "start",
@@ -339,6 +397,8 @@ class EmbeddedWebHandler(BaseHTTPRequestHandler):
             self._dispatch({"action": "stop", "key": body.get("key", "")})
         elif path == "/api/cancel-stop":
             self._dispatch({"action": "cancel_stop"})
+        elif path == "/api/sleep-schedule":
+            self._dispatch({**body, "action": "save_sleep_schedule"})
         elif path == "/api/schedules/recurring":
             self._dispatch({**body, "action": "add_recurring_schedule"})
         elif path.startswith("/api/schedules/recurring/"):
@@ -456,17 +516,6 @@ class EmbeddedWebHandler(BaseHTTPRequestHandler):
             self._dispatch({"action": "clear_history"})
         else:
             self._send_json({"status": "error", "error_code": "NOT_FOUND", "message": "Unknown endpoint."}, 404)
-
-    def do_OPTIONS(self):
-        if not self._is_host_allowed():
-            self.send_error(403, "Forbidden: invalid Host header")
-            return
-
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", self._get_cors_origin())
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Token")
-        self.end_headers()
 
     def __getattr__(self, name):
         if name.startswith("do_"):

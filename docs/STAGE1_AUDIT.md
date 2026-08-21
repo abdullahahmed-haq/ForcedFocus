@@ -33,7 +33,7 @@ Sparkle integration, or successful upgrade/rollback evidence exists.
 - Recovery command requiring the security key and enforcement-aware recovery.
 - `SystemAdapter`, fake adapter, privileged command plans, rollback, and removal
   of direct subprocess calls outside the adapter.
-- Dual-architecture CPython 3.13.14 runtime, transactional installer, downgrade
+- Dual-architecture CPython 3.13.15 runtime, transactional installer, downgrade
   prevention, rollback, and unsigned development PKG.
 - Xcode project and Sparkle 2 integration.
 - Developer ID Application/Installer identities, signing, notarization, staple,

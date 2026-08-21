@@ -134,6 +134,7 @@ ownership map and dependency direction are maintained in
 - `chrome-extension/`: Manifest V3 extension and service worker.
 - `shared/`: canonical browser-shared sources; copies are generated into client directories.
 - `menubar/`: native macOS menu-bar wrapper and build resources.
+- `packaging/macos/`: launchd, newsyslog, icon, and future package resources.
 - `docs/`: product, architecture, recovery, release, and audit documentation.
 - `scripts/`: development and audit automation; historical scripts live in `scripts/archive/`.
 - `install.sh` / `uninstall.sh`: installation lifecycle and system integration.
@@ -154,7 +155,8 @@ ownership map and dependency direction are maintained in
 1. Modify components in their respective directories (e.g., `web/`, `daemon/`, `menubar/`).
 2. Run browser smoke checks to cover idle, active standard, Pomodoro focus/break, recurring schedule edit, rules edit, and settings save.
 3. Validate API interactions via the local server on port `7070`.
-4. Ensure `node --check web/app.js` and `node --check web/settings.js` pass.
+4. Validate `web/js/app.js`, `web/js/settings.js`, `web/js/menubar.js`, and the
+   generated browser-shared copies with `make check-js check-shared`.
 5. Run the testing commands before sharing changes.
 
 ## Coding Standards

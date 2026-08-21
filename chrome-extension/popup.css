@@ -1,5 +1,6 @@
 /* ForcedFocus Chrome Extension — Popup Styles */
 
+@import "./fonts.css";
 @import "./shared/tokens.css";
 
 * {
@@ -9,16 +10,25 @@
 }
 
 body {
-  font-family:
-    "Inter",
-    -apple-system,
-    sans-serif;
+  font-family: var(--ff-font);
+  font-size: var(--ff-type-body);
+  line-height: var(--ff-leading-normal);
+  font-synthesis: none;
   background: var(--bg-primary);
   color: var(--text-primary);
-  width: 380px;
+  width: min(380px, 100%);
   min-height: 50px;
-  overflow: hidden;
+  max-height: 600px;
+  overflow-y: auto;
+  overflow-x: hidden;
   position: relative;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: var(--ff-font);
 }
 
 /* Background gradient orbs */
@@ -463,6 +473,184 @@ body::after {
   background: rgba(239, 68, 68, 0.15);
 }
 
+/* ── Sleep Schedule ─────────────────────── */
+.sleep-schedule {
+  margin: 14px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.sleep-schedule summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 11px 0;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sleep-summary,
+.sleep-status {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.sleep-status {
+  min-height: 16px;
+  margin-bottom: 10px;
+}
+
+.sleep-body {
+  padding: 2px 0 12px;
+}
+
+.sleep-enabled,
+.sleep-days label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.sleep-enabled {
+  margin-bottom: 10px;
+}
+
+.sleep-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 9px;
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+}
+
+.sleep-days legend,
+.sleep-mode-label,
+.sleep-sites > label,
+.sleep-times label {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.sleep-days legend {
+  width: 100%;
+  margin-bottom: 5px;
+}
+
+.sleep-times {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.sleep-times label,
+.sleep-mode-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sleep-body input[type="time"],
+.sleep-body input[type="text"],
+.sleep-body select {
+  width: 100%;
+  min-height: 30px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+}
+
+.sleep-mode-label {
+  margin-bottom: 10px;
+}
+
+.sleep-site-entry {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.sleep-site-entry button,
+.btn-sleep-save {
+  border: 1px solid var(--border-active);
+  border-radius: var(--radius-xs);
+  background: rgba(99, 102, 241, 0.12);
+  color: var(--accent-blue);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sleep-site-entry button {
+  flex: 0 0 auto;
+  padding: 0 10px;
+}
+
+.sleep-sites ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-height: 72px;
+  margin: 8px 0 10px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.sleep-site {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.sleep-site button {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.sleep-error {
+  margin: 0 0 8px;
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.btn-sleep-save {
+  width: 100%;
+  min-height: 32px;
+}
+
+.btn-sleep-save:hover,
+.sleep-site-entry button:hover {
+  background: rgba(99, 102, 241, 0.2);
+}
+
+.btn-sleep-save:disabled,
+.sleep-site-entry button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 /* ── Stop Dialog ───────────────────────── */
 .stop-dialog {
   margin-top: 12px;
@@ -508,7 +696,7 @@ textarea:focus-visible,
 .type-chip:focus-visible,
 .dur-chip:focus-visible,
 .pomo-chip:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-blue);
   outline-offset: 3px;
 }
 
@@ -680,6 +868,20 @@ textarea:focus-visible,
   display: none !important;
 }
 
+button,
+input,
+select,
+textarea,
+a {
+  min-height: 32px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-secondary);
+  opacity: 1;
+}
+
 /* ── Custom Checkbox ──────────────────────── */
 
 .custom-checkbox {
@@ -829,4 +1031,60 @@ textarea:focus-visible,
 .dbtn-start {
   background: var(--accent-gradient);
   color: white;
+}
+
+/* ── Extension Type Scale ─────────────────────────────────────────────── */
+.logo {
+  font-size: var(--ff-type-title);
+  line-height: var(--ff-leading-tight);
+}
+
+.timer-value {
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.offline p,
+.btn-start,
+.btn-rescue,
+.btn-stop,
+.info-row,
+.sleep-schedule summary,
+.sleep-site button,
+.stop-dialog input,
+.block-details-header {
+  font-size: var(--ff-type-body);
+  line-height: var(--ff-leading-normal);
+}
+
+.offline span,
+.offline code,
+.badge,
+.timer-label,
+.pomo-chip,
+.custom-row input,
+.pomo-field label,
+.pomo-field input,
+.pomo-total,
+.sleep-status,
+.sleep-days label,
+.sleep-times label,
+.sleep-body select,
+.btn-sleep-save,
+.sleep-site,
+.sleep-error,
+.stop-dialog p,
+.dbtn,
+.err,
+.footer a,
+.group-header span:first-child,
+.group-count,
+.group-chip,
+.detail-label,
+.detail-value,
+.block-details-error,
+.detail-retry-btn {
+  font-size: var(--ff-type-label);
+  line-height: var(--ff-leading-normal);
 }

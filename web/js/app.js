@@ -3,22 +3,50 @@
  * Handles countdown timer, API calls, domain management, and UI state.
  */
 
-import { escapeHtml, formatTime, extractDomain, showToast as sharedShowToast } from "../shared/utils.js";
+import { formatTime, extractDomain, showToast as sharedShowToast } from "../shared/utils.js";
 import { api } from "../shared/api.js";
 import { renderIntentTasks } from "../shared/intent-tasks.js";
+import { formatTimePickerValue, initTimePickers, setTimePickerValue } from "./time-picker.js";
 
 const API = "";
 const UI_PRODUCT_VERSION = "1.0.0";
+const PRESSED_CONTROL_SELECTOR = [
+  ".mode-btn",
+  ".session-type-btn",
+  ".schedule-type-btn",
+  ".dur-btn",
+  ".day-btn",
+  ".tracking-range-btn",
+].join(",");
+
+function syncPressedControls(root = document) {
+  const controls = root.matches?.(PRESSED_CONTROL_SELECTOR)
+    ? [root]
+    : [...(root.querySelectorAll?.(PRESSED_CONTROL_SELECTOR) || [])];
+  controls.forEach((control) => {
+    control.setAttribute("aria-pressed", String(control.classList.contains("active")));
+  });
+}
+
+function initializePressedControls() {
+  syncPressedControls();
+  new MutationObserver((records) => {
+    records.forEach((record) => {
+      if (record.type === "attributes") syncPressedControls(record.target);
+      record.addedNodes?.forEach((node) => {
+        if (node.nodeType === Node.ELEMENT_NODE) syncPressedControls(node);
+      });
+    });
+  }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
+}
 const TIMER_CIRCUMFERENCE = 565.48; // 2 * Math.PI * 90
 let currentMode = "blacklist";
 let selectedDuration = 120;
-let currentType = "standard";
 let totalSessionSeconds = 0;
 let currentRemaining = 0; // Guard against timer drift
 let animationFrameId = null;
 let countdownSignature = "";
 let countdownRefreshTimeout = null;
-let pollInterval = null;
 
 let sessionType = "standard";
 let pomoFocusMin = 25;
@@ -29,7 +57,6 @@ let scheduleType = "in"; // 'now', 'in', 'at'
 let availableGroups = {};
 let availableLists = { blacklist: [], whitelist: [] };
 let selectedGroups = new Set();
-let apiToken = ""; // Per-launch API token for mutation auth
 let lastActiveState = false;
 let sessionSnapshot = { intent: "", tasks: [] };
 let _cachedRecurring = []; // Optimistic local cache for instant UI updates
@@ -42,6 +69,20 @@ let trackingRange = "today";
 let activeStartFlow = "now";
 let trackingData = null;
 let _lastPrayerData = null;
+let sleepSchedule = {
+  enabled: false,
+  days_of_week: [],
+  sleep_time: "22:00",
+  wake_time: "07:00",
+  mode: "blacklist",
+  blacklist: [],
+  whitelist: [],
+};
+let sleepScheduleSummary = null;
+let sleepSchedulePending = null;
+let sleepSchedulePendingApplyAt = null;
+let sleepScheduleLoadState = "loading";
+let sleepScheduleRequestVersion = 0;
 
 let pickerState = {
   targetInput: null,
@@ -174,6 +215,13 @@ const els = {
   btnConfirmTemplate: $("#btnConfirmTemplate"),
   notificationFallback: $("#notificationFallback"),
   scheduleSetupSummary: $("#scheduleSetupSummary"),
+  sleepScheduleCard: $("#sleepScheduleCard"),
+  sleepScheduleState: $("#sleepScheduleState"),
+  sleepOverviewTime: $("#sleepOverviewTime"),
+  sleepOverviewDays: $("#sleepOverviewDays"),
+  sleepOverviewMode: $("#sleepOverviewMode"),
+  sleepOverviewSites: $("#sleepOverviewSites"),
+  btnRetrySleepSchedule: $("#btnRetrySleepSchedule"),
   
   // Prayer UI Elements
   prayerCountdownCard: $("#prayerCountdownCard"),
@@ -189,6 +237,10 @@ const els = {
 // ── API Helpers ──────────────────────────────────────────────────────────────
 
 const showToast = (msg, duration) => sharedShowToast(els.toast, msg, duration);
+
+document.addEventListener("forcedfocus:intent-error", (event) => {
+  showToast(event.detail?.message || "The task update could not be saved.");
+});
 
 function setMutationControlsDisabled(disabled) {
   document.querySelectorAll("button, input, select, textarea").forEach((control) => {
@@ -398,6 +450,7 @@ function renderNotificationFallback(warning) {
 // ── UI State ─────────────────────────────────────────────────────────────────
 
 function setActiveUI(status) {
+  renderSleepScheduleStatus(status.sleep_schedule, status.session_type);
   if (isStarting) return;
   renderNotificationFallback(status.notification_warning);
 
@@ -509,7 +562,7 @@ function setActiveUI(status) {
               timeStr = `${parts[1]} ${parts[2]}`;
             }
           }
-        } catch (e) {}
+        } catch {}
 
         // Build DOM safely to prevent XSS (no innerHTML with server data)
         const calDate = document.createElement("div");
@@ -611,7 +664,7 @@ function setActiveUI(status) {
     }
     // Mode & expires info
     if (status.session_type === "rescue") {
-      els.modeDisplay.textContent = `Mode: Rescue Throne 🛡️`;
+      els.modeDisplay.textContent = "Mode: Rescue Mode";
     } else if (status.session_type === "prayer") {
       els.modeDisplay.textContent = `Mode: Prayer Ban 🕌`;
     } else {
@@ -1076,7 +1129,7 @@ async function removeRecurringSchedule(id) {
       renderRecurringList(_cachedRecurring);
       showToast(`Error: ${res.message || "Failed to remove"}`);
     }
-  } catch (err) {
+  } catch {
     _cachedRecurring = previous;
     _lastRecurringJSON = JSON.stringify(_cachedRecurring);
     renderRecurringList(_cachedRecurring);
@@ -1153,8 +1206,7 @@ function openRecurringEditModal(rule) {
   els.recurringEditName.value = rule.name || "Focus Ritual";
   
   const startTime = rule.start_time || "";
-  els.recurringEditTime.value = startTime ? convertToDisplayTime(startTime) : "";
-  els.recurringEditTime.dataset.value = startTime;
+  setTimePickerValue(els.recurringEditTime, startTime);
 
   els.recurringEditDuration.value = rule.duration_minutes || 120;
   els.recurringEditMode.value = rule.mode || "blacklist";
@@ -1231,7 +1283,7 @@ async function saveRecurringEdit() {
     } else {
       showToast(`Error: ${res.message || "Failed to update schedule"}`);
     }
-  } catch (err) {
+  } catch {
     showToast("Connection failed.");
   } finally {
     els.btnSaveRecurringEdit.textContent = originalText;
@@ -1341,7 +1393,7 @@ function renderTemplates() {
       startBtn.className = "template-start";
       startBtn.textContent = "Start";
       startBtn.setAttribute("aria-label", `Start ${template.name || "template"}`);
-      startBtn.addEventListener("click", () => startTemplate(template.id, startBtn));
+      startBtn.addEventListener("click", () => startTemplate(template.id));
 
       const duplicateBtn = document.createElement("button");
       duplicateBtn.textContent = "Duplicate";
@@ -1390,7 +1442,7 @@ function renderTemplates() {
       
       mbItem.addEventListener("click", () => {
         startBtn.textContent = "⌛";
-        startTemplate(template.id, startBtn);
+        startTemplate(template.id);
       });
       
       mbItem.appendChild(leftCol);
@@ -1422,7 +1474,7 @@ async function saveTemplateFromCurrent() {
   }
 }
 
-function startTemplate(templateId, button) {
+function startTemplate(templateId) {
   const template = sessionTemplates.find(t => t.id === templateId);
   if (!template) return;
 
@@ -1531,6 +1583,159 @@ async function deleteTemplate(templateId) {
 }
 
 // ── Refresh Status ───────────────────────────────────────────────────────────
+
+function normalizeSleepSchedule(config = {}) {
+  const mode = ["ban", "blacklist", "whitelist"].includes(config.mode)
+    ? config.mode
+    : "blacklist";
+  const days = Array.isArray(config.days_of_week)
+    ? [...new Set(config.days_of_week.filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))].sort((a, b) => a - b)
+    : [];
+  const domains = (name) => Array.isArray(config[name])
+    ? [...new Set(config[name].filter((domain) => typeof domain === "string" && domain))]
+    : [];
+  return {
+    enabled: Boolean(config.enabled),
+    days_of_week: days,
+    sleep_time: typeof config.sleep_time === "string" ? config.sleep_time : "22:00",
+    wake_time: typeof config.wake_time === "string" ? config.wake_time : "07:00",
+    mode,
+    blacklist: domains("blacklist"),
+    whitelist: domains("whitelist"),
+  };
+}
+
+function sleepScheduleModeLabel(mode) {
+  return {
+    ban: "Block all websites",
+    blacklist: "Block selected websites",
+    whitelist: "Allow selected websites only",
+  }[mode] || "Sleep Schedule";
+}
+
+function formatSleepScheduleDays(days = []) {
+  const labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  if (days.length === 7) return "Every night";
+  if (days.length === 0) return "No nights selected";
+  if (days.length === 5 && days.every((day, index) => day === index)) return "Weeknights";
+  return days.map((day) => labels[day]).filter(Boolean).join(", ");
+}
+
+function formatSleepScheduleSites() {
+  if (sleepSchedule.mode === "ban") return "All websites";
+  const count = sleepSchedule[sleepSchedule.mode]?.length || 0;
+  if (sleepSchedule.mode === "whitelist") {
+    return count === 1 ? "1 allowed website" : `${count} allowed websites`;
+  }
+  return count === 1 ? "1 blocked website" : `${count} blocked websites`;
+}
+
+function renderSleepScheduleOverview() {
+  if (!els.sleepOverviewTime) return;
+  const sleepTime = formatTimePickerValue(sleepSchedule.sleep_time) || "Not set";
+  const wakeTime = formatTimePickerValue(sleepSchedule.wake_time) || "Not set";
+  els.sleepOverviewTime.textContent = `${sleepTime} – ${wakeTime}`;
+  els.sleepOverviewDays.textContent = formatSleepScheduleDays(sleepSchedule.days_of_week);
+  els.sleepOverviewMode.textContent = sleepScheduleModeLabel(sleepSchedule.mode);
+  els.sleepOverviewSites.textContent = formatSleepScheduleSites();
+}
+
+function formatSleepDateTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value || "unknown time") : date.toLocaleString([], {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function renderSleepScheduleCard() {
+  renderSleepScheduleOverview();
+  const isLoading = sleepScheduleLoadState === "loading";
+  els.sleepScheduleCard?.classList.toggle("is-loading", isLoading);
+  els.btnRetrySleepSchedule.classList.toggle("hidden", sleepScheduleLoadState !== "error");
+}
+
+function renderSleepScheduleStatus(summary, sessionType) {
+  if (!els.sleepScheduleState) return;
+  if (summary && typeof summary === "object") {
+    sleepScheduleSummary = summary;
+    const pending = summary.has_pending_changes ?? summary.pending_changes;
+    if (pending === false) {
+      sleepSchedulePending = null;
+      sleepSchedulePendingApplyAt = null;
+    }
+  }
+  renderSleepScheduleOverview();
+
+  if (sleepScheduleLoadState === "loading") {
+    els.sleepScheduleState.textContent = "Loading Sleep Schedule...";
+    els.sleepScheduleState.dataset.state = "loading";
+    return;
+  }
+  if (sleepScheduleLoadState === "error") {
+    els.sleepScheduleState.textContent = "Could not load schedule";
+    els.sleepScheduleState.dataset.state = "error";
+    return;
+  }
+  const active = Boolean(sleepScheduleSummary?.active) || sessionType === "sleep";
+  const hasPendingChanges = Boolean(
+    sleepScheduleSummary?.has_pending_changes || sleepScheduleSummary?.pending_changes || sleepSchedulePending,
+  );
+  const applyAt = sleepScheduleSummary?.pending_apply_at || sleepSchedulePendingApplyAt;
+  let stateText;
+  if (active) {
+    const wakeAt = sleepScheduleSummary?.wake_at;
+    const remaining = wakeAt
+      ? Math.max(0, Math.ceil((new Date(wakeAt).getTime() - Date.now()) / 1000))
+      : Math.max(0, Number(sleepScheduleSummary?.remaining_seconds) || 0);
+    stateText = `Sleep active. Wake in ${formatTime(remaining)}${wakeAt ? ` (${formatSleepDateTime(wakeAt)})` : ""}.`;
+  } else if (!sleepSchedule.enabled) {
+    stateText = "Disabled";
+  } else if (sleepScheduleSummary?.next_start_at) {
+    stateText = `Enabled. Next sleep: ${formatSleepDateTime(sleepScheduleSummary.next_start_at)}.`;
+  } else {
+    stateText = `Enabled. ${sleepScheduleModeLabel(sleepSchedule.mode)}.`;
+  }
+  if (hasPendingChanges) {
+    stateText += ` Changes queued${applyAt ? `; apply at ${formatSleepDateTime(applyAt)}` : ""}.`;
+  }
+  els.sleepScheduleState.textContent = stateText;
+  els.sleepScheduleState.dataset.state = active ? "active" : sleepSchedule.enabled ? "enabled" : "disabled";
+}
+
+function updateSleepScheduleCountdown() {
+  if (sleepScheduleSummary?.active) renderSleepScheduleStatus();
+}
+
+async function refreshSleepSchedule() {
+  const requestVersion = ++sleepScheduleRequestVersion;
+  sleepScheduleLoadState = "loading";
+  renderSleepScheduleCard();
+  renderSleepScheduleStatus();
+  try {
+    const data = await api("GET", "/api/sleep-schedule");
+    if (requestVersion !== sleepScheduleRequestVersion) return;
+    if (data.status === "ok") {
+      sleepSchedulePending = data.pending_sleep_schedule || data.pending_config || null;
+      sleepSchedulePendingApplyAt = data.pending_apply_at || data.summary?.pending_apply_at || null;
+      sleepSchedule = normalizeSleepSchedule(sleepSchedulePending || data.sleep_schedule);
+      sleepScheduleSummary = data.summary || sleepScheduleSummary;
+      sleepScheduleLoadState = "ready";
+    } else if (data.status !== "aborted") {
+      sleepScheduleLoadState = "error";
+    }
+  } catch {
+    if (requestVersion !== sleepScheduleRequestVersion) return;
+    sleepScheduleLoadState = "error";
+  }
+  renderSleepScheduleCard();
+  renderSleepScheduleStatus();
+}
+
+function initSleepScheduleEvents() {
+  els.btnRetrySleepSchedule?.addEventListener("click", refreshSleepSchedule);
+}
 
 // S1: Track state for detecting phase transitions
 let _lastPomoPhase = null;
@@ -1760,7 +1965,7 @@ function startPermaCountdown() {
   if (permaCountdownInterval) return;
   permaCountdownInterval = setInterval(() => {
     let allDone = true;
-    for (const [domain, info] of Object.entries(permaCountdownData)) {
+    for (const info of Object.values(permaCountdownData)) {
       info.remaining = Math.max(0, info.remaining - 1);
       if (info.el) info.el.textContent = formatCountdown(info.remaining);
       if (info.remaining > 0) allDone = false;
@@ -2037,29 +2242,113 @@ function renderBlockDetailsModal(details) {
 
 // ── Event Handlers ───────────────────────────────────────────────────────────
 
-function initEvents() {
-  // Tab Navigation
-  $$(".nav-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      // Remove active from all tabs and panes
-      $$(".nav-btn").forEach((b) => b.classList.remove("active"));
-      $$(".tab-pane").forEach((p) => p.classList.remove("active"));
+const dashboardTabHash = {
+  "tab-dashboard": "dashboard",
+  "tab-rules": "rules",
+  "tab-schedules": "schedules",
+  "tab-tracking": "tracking",
+};
 
-      // Add active to clicked tab and corresponding pane
-      btn.classList.add("active");
-      const targetId = btn.dataset.tab;
-      const targetPane = document.getElementById(targetId);
-      if (targetPane) {
-        targetPane.classList.add("active");
-        triggerCardCascade(targetPane);
-      }
+function activateDashboardTab(btn, { focus = false, updateHash = true } = {}) {
+  if (!btn) return;
+  const targetId = btn.dataset.tab;
+  const targetPane = document.getElementById(targetId);
+  if (!targetPane) return;
 
-      // Lazy-load tracking data when Tracking tab is activated
-      if (targetId === "tab-tracking") {
-        refreshTracking(trackingRange);
-      }
+  $$(".nav-btn").forEach((tab) => {
+    const active = tab === btn;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+  });
+  $$(".tab-pane").forEach((pane) => {
+    const active = pane === targetPane;
+    pane.classList.toggle("active", active);
+    pane.hidden = !active;
+  });
+
+  if (focus) btn.focus();
+  if (updateHash) {
+    window.history.replaceState(null, "", `#${dashboardTabHash[targetId]}`);
+  }
+  triggerCardCascade(targetPane);
+  if (targetId === "tab-tracking") refreshTracking(trackingRange);
+}
+
+function initializeDashboardTabs() {
+  const tabs = [...$$(".nav-btn")];
+  const initialHash = window.location.hash.slice(1);
+  const initialTab = tabs.find((tab) => dashboardTabHash[tab.dataset.tab] === initialHash) || tabs[0];
+  activateDashboardTab(initialTab, { updateHash: false });
+
+  tabs.forEach((btn, index) => {
+    btn.addEventListener("click", () => activateDashboardTab(btn));
+    btn.addEventListener("keydown", (event) => {
+      let nextIndex = null;
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+      if (event.key === "ArrowUp" || event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === "Home") nextIndex = 0;
+      if (event.key === "End") nextIndex = tabs.length - 1;
+      if (nextIndex === null) return;
+      event.preventDefault();
+      activateDashboardTab(tabs[nextIndex], { focus: true });
     });
   });
+
+  window.addEventListener("hashchange", () => {
+    const hash = window.location.hash.slice(1);
+    activateDashboardTab(tabs.find((tab) => dashboardTabHash[tab.dataset.tab] === hash) || tabs[0], {
+      updateHash: false,
+    });
+  });
+}
+
+function initializeModalAccessibility() {
+  let lastTrigger = null;
+  document.addEventListener("click", (event) => {
+    const trigger = event.target.closest("button, a, [role='button']");
+    if (trigger && !trigger.closest("[role='dialog']")) lastTrigger = trigger;
+  }, true);
+
+  const dialogs = [...document.querySelectorAll("[role='dialog']")];
+  dialogs.forEach((dialog) => {
+    const observer = new MutationObserver(() => {
+      if (dialog.classList.contains("hidden")) lastTrigger?.focus?.();
+    });
+    observer.observe(dialog, { attributes: true, attributeFilter: ["class"] });
+
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) dialog.classList.add("hidden");
+    });
+  });
+
+  document.addEventListener("keydown", (event) => {
+    const dialog = dialogs.find((candidate) => !candidate.classList.contains("hidden"));
+    if (!dialog) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      dialog.classList.add("hidden");
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...dialog.querySelectorAll("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]")];
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+}
+
+function initEvents() {
+  initializeDashboardTabs();
+  initializeModalAccessibility();
+  initSleepScheduleEvents();
 
   // Mode toggle (excluding nav tabs)
   $$(".mode-btn:not(.session-type-btn):not(.schedule-type-btn)").forEach(
@@ -2388,7 +2677,7 @@ function initEvents() {
         } else {
           showToast(`Error: ${res.message || "Failed to start"}`);
         }
-      } catch (err) {
+      } catch {
         showToast("Connection failed. Is the daemon running?");
       } finally {
         els.btnStart.innerHTML = originalBtnHTML;
@@ -2450,13 +2739,12 @@ function initEvents() {
           selectedRecurringDays = [];
           els.recurringDays.querySelectorAll('.day-btn').forEach(b => b.classList.remove('active'));
           if (els.recurringName) els.recurringName.value = "";
-          els.recurringTime.value = "";
-          delete els.recurringTime.dataset.value;
+          setTimePickerValue(els.recurringTime, "");
           updateSetupSummaries();
         } else {
           showToast(`Error: ${res.message || "Failed to add"}`);
         }
-      } catch (err) {
+      } catch {
         showToast("Connection failed.");
       } finally {
         els.btnAddRecurring.innerHTML = originalBtnHTML;
@@ -2478,10 +2766,6 @@ function initEvents() {
         setRecurringDayButtons(els.recurringEditDays, editRecurringDays);
       });
     });
-  }
-
-  if (els.recurringEditTime) {
-    els.recurringEditTime.addEventListener("click", () => openPicker(els.recurringEditTime, 'time'));
   }
 
   if (els.recurringEditType) {
@@ -2530,7 +2814,7 @@ function initEvents() {
           showToast("Rescue request accepted; waiting for daemon confirmation.");
         }
       } else {
-        showToast(res.message || "Failed to activate Rescue Throne.");
+        showToast(res.message || "Failed to activate Rescue Mode.");
       }
     } finally {
       els.btnRescue.innerHTML = originalRescueHTML;
@@ -2567,7 +2851,7 @@ function initEvents() {
         } else {
           showToast("Error: " + res.message);
         }
-      } catch (err) {
+      } catch {
         showToast("Connection failed.");
       } finally {
         btnContinueFocus.disabled = false;
@@ -2714,6 +2998,7 @@ function initEvents() {
   // R5: Close modal on Escape key
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
+      if (document.querySelector(".ff-time-picker[open]")) return;
       if (!els.stopModal.classList.contains("hidden")) {
         els.stopModal.classList.add("hidden");
       }
@@ -2809,6 +3094,7 @@ async function addDomain(listName) {
 
 
 function updateLiveCountdowns() {
+  updateSleepScheduleCountdown();
   $$(".cal-duration").forEach(el => {
     const startMs = el.dataset.startMs;
     if (startMs) {
@@ -2956,8 +3242,8 @@ async function refreshTracking(range) {
   trackingData = data;
   renderTrackingSummary(data.summary);
   renderTrackingStreak(data.summary);
-  renderTrackingChart(data.summary);
-  renderTrackingHeatmap(data.summary);
+  renderTrackingChart();
+  renderTrackingHeatmap();
   renderTrackingBreakdown(data.summary);
   renderTrackingRecent(data.entries, data.events || []);
 }
@@ -3010,10 +3296,10 @@ function renderTrackingStreak(summary) {
   if (longestSessionEl) longestSessionEl.textContent = formatFocusTime(summary.longest_session_minutes);
 }
 
-function renderTrackingChart(summary) {
+function renderTrackingChart() {
   const container = document.getElementById("trackingBarChart");
-  const cardTitle = container.parentElement.querySelector(".card-title");
   if (!container) return;
+  const cardTitle = container.parentElement?.querySelector(".card-title");
   container.innerHTML = "";
 
   if (!trackingData || !trackingData.entries || trackingData.entries.length === 0) {
@@ -3115,7 +3401,7 @@ function renderTrackingChart(summary) {
   });
 }
 
-function renderTrackingHeatmap(summary) {
+function renderTrackingHeatmap() {
   const grid = document.getElementById("trackingHeatmap");
   const hourLabelsEl = document.getElementById("heatmapHourLabels");
   if (!grid || !hourLabelsEl) return;
@@ -3316,7 +3602,7 @@ function renderTrackingRecent(entries, events = []) {
       daySpan.textContent = d.getDate();
       dateCol.appendChild(monthSpan);
       dateCol.appendChild(daySpan);
-    } catch (e) {
+    } catch {
       dateCol.textContent = "--";
     }
 
@@ -3337,7 +3623,7 @@ function renderTrackingRecent(entries, events = []) {
         ? `${entry.prayer_name || "Prayer"} ${entry.event_type === "ended" ? "ended" : "started"}`
         : formatFocusTime(entry.duration_minutes);
       timeRow.textContent = `${h12}:${m} ${period} · ${eventLabel}`;
-    } catch (e) {
+    } catch {
       timeRow.textContent = `${formatFocusTime(entry.duration_minutes)}`;
     }
 
@@ -3422,7 +3708,20 @@ function initTrackingEvents() {
   });
 }
 
+async function loadApplicationData() {
+  await refreshStatus();
+  await refreshSleepSchedule();
+  await refreshLists();
+  await refreshPermaBlocklist();
+  await refreshGroups();
+  await refreshTemplates();
+  await loadSettings();
+  await fetchPrayerData();
+}
+
 async function init() {
+  initializePressedControls();
+  initTimePickers();
   setInterval(updateLiveCountdowns, 1000);
   initEvents();
   initPickerEvents();
@@ -3430,14 +3729,9 @@ async function init() {
   initDelightEvents();
 
   try {
-    await checkVersionCompatibility();
-    await refreshStatus();
-    await refreshLists();
-    await refreshPermaBlocklist();
-    await refreshGroups();
-    await refreshTemplates();
-    await loadSettings();
-    await fetchPrayerData();
+    if (await checkVersionCompatibility()) {
+      await loadApplicationData();
+    }
     
     // Initial sidebar and card cascade
     triggerSidebarCascade();
@@ -3456,8 +3750,9 @@ async function init() {
   els.daemonHealthAction?.addEventListener("click", async () => {
     els.daemonHealthAction.disabled = true;
     try {
-      await checkVersionCompatibility();
-      await refreshStatus();
+      if (await checkVersionCompatibility()) {
+        await loadApplicationData();
+      }
     } finally {
       els.daemonHealthAction.disabled = false;
     }
@@ -3519,6 +3814,7 @@ async function init() {
           loadSettings();
           refreshPermaBlocklist();
           refreshTracking(trackingRange);
+          refreshSleepSchedule();
         }
       } catch (err) {
         console.error("SSE parse error:", err);
@@ -3642,15 +3938,6 @@ function formatTimeDisplay(hrs, mins) {
 function formatTimeMachine(hrs, mins) {
   const pad = (n) => String(n).padStart(2, "0");
   return `${pad(hrs)}:${pad(mins)}`;
-}
-
-function convertToDisplayTime(time24) {
-  if (!time24) return "";
-  const parts = time24.split(":");
-  if (parts.length < 2) return time24;
-  const hrs = parseInt(parts[0], 10);
-  const mins = parseInt(parts[1], 10);
-  return formatTimeDisplay(hrs, mins);
 }
 
 function closePicker() {
@@ -3852,21 +4139,12 @@ function openPicker(inputEl, type) {
 
 function initPickerEvents() {
   const scheduleAt = document.getElementById("scheduleAt");
-  const recurringTime = document.getElementById("recurringTime");
   
   if (scheduleAt) {
     scheduleAt.addEventListener("click", () => openPicker(scheduleAt, 'datetime'));
     scheduleAt.addEventListener("focus", (e) => {
       e.target.blur();
       openPicker(scheduleAt, 'datetime');
-    });
-  }
-  
-  if (recurringTime) {
-    recurringTime.addEventListener("click", () => openPicker(recurringTime, 'time'));
-    recurringTime.addEventListener("focus", (e) => {
-      e.target.blur();
-      openPicker(recurringTime, 'time');
     });
   }
   

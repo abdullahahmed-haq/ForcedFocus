@@ -42,6 +42,7 @@ diagnostic tooling refer to them directly.
 | `chrome-extension/` | Manifest, extension UI, and service worker | Daemon business rules |
 | `shared/` | Canonical browser-shared JavaScript/CSS sources | Generated copies |
 | `menubar/` | Native macOS menu-bar wrapper | Daemon business logic |
+| `packaging/macos/` | macOS launchd, newsyslog, and application packaging resources | Runtime application logic |
 | `scripts/` | Development, release, and audit automation | Runtime application code |
 | `docs/` | Product, architecture, recovery, and release documentation | Executable behavior |
 
@@ -60,8 +61,9 @@ send commands and render responses; they should not reimplement policy.
 
 ## Safe change rules
 
-1. Preserve the public paths used by `install.sh`, the LaunchDaemon plist, and
-   `pyproject.toml` unless the packaging contract is updated in the same change.
+1. Preserve the public paths used by `install.sh`, the LaunchDaemon plist under
+   `packaging/macos/`, and `pyproject.toml` unless the packaging contract is
+   updated in the same change.
 2. Put new policy in a daemon module and expose it through the existing command
    or HTTP interfaces; do not duplicate it in a client.
 3. Put OS-specific behavior behind an adapter in `daemon/forcefocus/enforcement/`.

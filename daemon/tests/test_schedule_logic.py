@@ -141,3 +141,28 @@ def test_scheduled_execution_does_not_merge_into_current_session(mock_daemon):
 
     assert response["status"] == "error"
     assert "Scheduled session conflicts" in response["message"]
+
+
+def test_start_template_delegates_to_session_manager(mock_daemon):
+    template = {
+        "id": "template-1",
+        "name": "Deep Work",
+        "duration_minutes": 30,
+        "mode": "blacklist",
+        "session_type": "standard",
+        "groups": [],
+        "intent": "",
+        "intent_tasks": [],
+    }
+    mock_daemon.schedules_manager.load_templates = MagicMock(return_value=[template])
+    mock_daemon.schedules_manager.save_templates = MagicMock()
+    mock_daemon.session_manager._start_session = MagicMock(
+        return_value={"status": "ok", "message": "started"}
+    )
+
+    response = mock_daemon.schedules_manager.cmd_start_template(
+        {"id": "template-1"}
+    )
+
+    assert response["status"] == "ok"
+    mock_daemon.session_manager._start_session.assert_called_once()

@@ -42,6 +42,7 @@ class CommandService:
         schedules = self.daemon.schedules_manager
         settings = self.daemon.settings_manager
         notifications = self.daemon.notifications_manager
+        sleep = self.daemon.sleep_schedule_manager
         return {
             "start": session._start_session,
             "stop": lambda cmd: session._request_stop(cmd.get("key", "")),
@@ -86,6 +87,8 @@ class CommandService:
             "get_prayer": lambda _cmd: self.daemon.prayer_manager.cmd_get_prayer(),
             "skip_prayer": self.daemon.prayer_manager.cmd_skip_prayer,
             "get_session_domains": lambda _cmd: domains.cmd_get_session_domains(),
+            "get_sleep_schedule": lambda _cmd: sleep.cmd_get_sleep_schedule(),
+            "save_sleep_schedule": sleep.cmd_save_sleep_schedule,
         }
 
     def _health(self) -> dict[str, Any]:
@@ -93,6 +96,9 @@ class CommandService:
             "status": "ok",
             "healthy": not self.daemon.recovery_required,
             "recovery_required": self.daemon.recovery_required,
+            "migration_in_progress": bool(
+                getattr(self.daemon, "migration_in_progress", False)
+            ),
             "product_version": PRODUCT_VERSION,
             "api_version": API_VERSION,
             "state_schema_version": STATE_SCHEMA_VERSION,
@@ -111,9 +117,14 @@ class CommandService:
         lower_message = message.lower()
         if "unauthorized" in lower_message:
             code = "UNAUTHORIZED"
-        elif "active session" in lower_message or "overlap" in lower_message:
+        elif "active session" in lower_message or "overlap" in lower_message or "conflict" in lower_message:
             code = "STATE_CONFLICT"
-        elif "invalid" in lower_message or "missing" in lower_message or "must be" in lower_message:
+        elif (
+            "invalid" in lower_message
+            or "missing" in lower_message
+            or "must be" in lower_message
+            or "requires" in lower_message
+        ):
             code = "INVALID_INPUT"
         else:
             code = "COMMAND_REJECTED"
